@@ -1,0 +1,13 @@
+.git
+.github
+.gitignore
+*.zip
+node_modules
+npm-debug.log
+deploy/.env
+deploy/secrets/*.txt
+docs
+*.md
+qa.sh
+smoke_runtime.js
+e2e
