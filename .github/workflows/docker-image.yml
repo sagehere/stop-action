@@ -3,7 +3,19 @@ name: Build and publish Docker image
 on:
   push:
     branches: [main]
-    tags: ['v*']
+    paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "index.html"
+      - "app.js"
+      - "db.js"
+      - "manifest.webmanifest"
+      - "sw.js"
+      - "icon.svg"
+      - "relay/**"
+      - "deploy/**"
+      - ".github/workflows/docker-image.yml"
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
