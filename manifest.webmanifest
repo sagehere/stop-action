@@ -1,0 +1,12 @@
+{
+  "name": "Stop Action · v1.0",
+  "short_name": "训练",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#0e1116",
+  "theme_color": "#111318",
+  "lang": "zh-CN",
+  "icons": [
+    {"src":"icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}
+  ]
+}
