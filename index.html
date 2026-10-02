@@ -1,0 +1,457 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#111318" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <title>训练 · 安全 Relay 原型 v1.0</title>
+  <style>
+    :root{
+      --bg:#0e1116;
+      --panel:#171b22;
+      --panel2:#1d222b;
+      --text:#f4f6f8;
+      --muted:#9aa4b2;
+      --line:#2a303b;
+      --accent:#dfe5ec;
+      --soft:#242a34;
+      --danger:#f2b9b9;
+      --safe:#cde7d8;
+      --radius:22px;
+      --shadow:0 18px 50px rgba(0,0,0,.28);
+    }
+    *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+    html,body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;min-height:100%}
+    body{overscroll-behavior:none}
+    button,input{font:inherit}
+    button{cursor:pointer}
+    .app{min-height:100dvh;max-width:560px;margin:0 auto;position:relative;background:radial-gradient(circle at top,#171c24 0,#0e1116 44%)}
+    .view{display:none;min-height:100dvh;padding:18px 18px calc(92px + env(safe-area-inset-bottom))}
+    .view.active{display:block}
+    .full{padding:0;min-height:100dvh}
+    .topline{display:flex;justify-content:space-between;align-items:center;margin:4px 2px 18px}
+    .eyebrow{font-size:12px;letter-spacing:.13em;text-transform:uppercase;color:var(--muted)}
+    h1,h2,h3,p{margin:0}
+    h1{font-size:30px;line-height:1.15;margin-top:4px}
+    h2{font-size:20px;margin-bottom:12px}
+    .muted{color:var(--muted)}
+    .card{background:linear-gradient(180deg,var(--panel),#14181f);border:1px solid var(--line);border-radius:var(--radius);padding:18px;box-shadow:var(--shadow)}
+    .card + .card{margin-top:14px}
+    .hero{padding:22px}
+    .hero h2{font-size:24px;margin:8px 0 10px}
+    .hero p{color:var(--muted);line-height:1.55}
+    .modules{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0}
+    .pill{padding:8px 11px;border-radius:999px;background:var(--soft);border:1px solid var(--line);font-size:13px;color:#d9dee5}
+    .primary,.secondary,.ghost{border:0;border-radius:16px;padding:15px 18px;font-weight:700;width:100%}
+    .primary{background:var(--text);color:#0e1116}
+    .secondary{background:var(--panel2);color:var(--text);border:1px solid var(--line)}
+    .ghost{background:transparent;color:var(--muted);border:1px solid var(--line)}
+    .primary:active,.secondary:active,.ghost:active{transform:scale(.99)}
+    .section{margin-top:24px}
+    .section-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+    .section-head h2{margin:0;font-size:18px}
+    .progress-row{display:grid;grid-template-columns:72px 1fr 44px;gap:10px;align-items:center;padding:9px 0}
+    .progress{height:8px;border-radius:99px;background:#232832;overflow:hidden}
+    .progress i{display:block;height:100%;background:#e6ebf1;border-radius:inherit}
+    .metric-line{display:flex;justify-content:space-between;align-items:end;gap:12px}
+    .metric-big{font-size:30px;font-weight:800}
+    .trend{font-size:14px;color:var(--safe)}
+    .nav{position:fixed;left:50%;bottom:0;transform:translateX(-50%);width:min(560px,100%);display:grid;grid-template-columns:repeat(4,1fr);background:rgba(14,17,22,.94);backdrop-filter:blur(14px);border-top:1px solid var(--line);padding:10px 12px calc(10px + env(safe-area-inset-bottom));z-index:20}
+    .nav button{border:0;background:transparent;color:var(--muted);padding:9px 6px;border-radius:12px;font-size:13px}
+    .nav button.active{color:var(--text);background:var(--panel2)}
+    .screen-title{font-size:28px;margin:8px 0 4px}
+    .form-card{margin-top:16px}
+    .field{padding:15px 0;border-bottom:1px solid var(--line)}
+    .field:last-child{border-bottom:0}
+    .field-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+    .field strong{font-size:16px}
+    input[type=range]{width:100%;accent-color:#f4f6f8}
+    .toggle-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    .choice{border:1px solid var(--line);background:var(--panel2);color:var(--text);padding:14px;border-radius:14px}
+    .choice.selected{outline:2px solid #f4f6f8}
+    .notice{margin-top:12px;padding:12px 14px;border:1px solid #5a4040;background:#261a1a;border-radius:14px;color:#f0caca;font-size:13px;line-height:1.45;display:none}
+
+    .session-shell{min-height:100dvh;display:flex;flex-direction:column;position:relative;user-select:none;touch-action:none;background:linear-gradient(180deg,#11151c,#0d1015)}
+    .session-top{padding:calc(14px + env(safe-area-inset-top)) 18px 8px;display:flex;justify-content:space-between;align-items:center;z-index:2}
+    .session-top button{background:#1a1f27;color:var(--text);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+    .phase{font-size:13px;letter-spacing:.12em;color:var(--muted);text-transform:uppercase}
+    .session-main{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:20px;position:relative;overflow:hidden}
+    .arousal{font-size:112px;font-weight:800;line-height:1;letter-spacing:-.06em;margin:16px 0}
+    .session-hint{color:var(--muted);font-size:16px;line-height:1.55;min-height:52px;max-width:320px}
+    .gesture-hint{margin-top:30px;color:#6f7988;font-size:13px;line-height:1.8}
+    .session-bottom{padding:10px 18px calc(18px + env(safe-area-inset-bottom));display:grid;grid-template-columns:1fr auto 1fr;align-items:end;color:var(--muted);font-size:13px}
+    .cycles{display:flex;gap:8px;justify-content:center}
+    .dot{width:10px;height:10px;border-radius:999px;border:1px solid #626b78;background:transparent}
+    .dot.done{background:#e8edf3;border-color:#e8edf3}
+    .dot.current{box-shadow:0 0 0 3px rgba(232,237,243,.14)}
+    .timer-right{text-align:right}
+    .pulse{position:absolute;width:320px;height:320px;border-radius:50%;border:1px solid rgba(255,255,255,.06);animation:breathe 6s ease-in-out infinite;pointer-events:none}
+    @keyframes breathe{0%,100%{transform:scale(.84);opacity:.2}50%{transform:scale(1.08);opacity:.8}}
+    .stage-stop{background:linear-gradient(180deg,#151414,#0d1015)}
+    .stage-recovery{background:linear-gradient(180deg,#10171a,#0d1015)}
+    .finish-sheet{position:absolute;left:14px;right:14px;bottom:calc(14px + env(safe-area-inset-bottom));background:#191e25;border:1px solid var(--line);border-radius:20px;padding:14px;box-shadow:var(--shadow);display:none;z-index:10}
+    .finish-sheet.show{display:block}
+    .finish-sheet .secondary{margin-top:8px}
+
+    .prepare{min-height:100dvh;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:24px}
+    .prepare .count{font-size:58px;font-weight:800;margin:18px 0}
+    .breath-orb{width:180px;height:180px;border-radius:50%;border:1px solid #3d4654;display:grid;place-items:center;margin:24px 0;animation:breathe 6s ease-in-out infinite}
+    .breath-orb::after{content:"";width:80px;height:80px;border-radius:50%;background:#202731}
+
+    .review-group{margin:18px 0}
+    .review-group h3{font-size:16px;margin-bottom:10px}
+    .chips{display:flex;flex-wrap:wrap;gap:8px}
+    .chip{padding:10px 12px;border:1px solid var(--line);background:var(--panel2);color:var(--text);border-radius:14px}
+    .chip.selected{background:#f2f5f8;color:#0d1015;border-color:#f2f5f8}
+    .summary-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px}
+    .summary-metric{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:16px}
+    .summary-metric strong{display:block;font-size:28px;margin-top:5px}
+    .chart-wrap{margin-top:16px;background:#11151b;border:1px solid var(--line);border-radius:18px;padding:12px;overflow:hidden}
+    svg{width:100%;height:220px;display:block}
+    .small{font-size:12px;color:var(--muted)}
+    .empty{padding:28px;text-align:center;color:var(--muted)}
+    .safety{font-size:12px;line-height:1.55;color:var(--muted);margin-top:18px}
+
+    .bottom-sheet{position:fixed;left:50%;bottom:0;transform:translate(-50%,105%);width:min(560px,100%);background:#191e25;border:1px solid var(--line);border-bottom:0;border-radius:24px 24px 0 0;padding:16px 16px calc(18px + env(safe-area-inset-bottom));box-shadow:0 -18px 50px rgba(0,0,0,.36);z-index:60;transition:transform .22s ease}
+    .bottom-sheet.show{transform:translate(-50%,0)}
+    .sheet-handle{width:42px;height:4px;border-radius:99px;background:#4a5360;margin:0 auto 14px}
+    .sheet-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:14px}
+    .signal-btn{border:1px solid var(--line);background:var(--panel2);color:var(--text);padding:15px 10px;border-radius:15px;font-weight:650}
+    .signal-btn:active{transform:scale(.98)}
+    .adaptive{border-color:#34404d;background:linear-gradient(180deg,#182028,#14191f)}
+    .adaptive strong{display:block;font-size:18px;margin:6px 0}
+    .reason{margin-top:10px;padding-top:10px;border-top:1px solid var(--line);font-size:13px;color:var(--muted);line-height:1.55}
+    .schedule-item{display:grid;grid-template-columns:58px 1fr auto;gap:10px;align-items:center;padding:13px 0;border-bottom:1px solid var(--line)}
+    .schedule-item:last-child{border-bottom:0}
+    .schedule-item .day{font-weight:750}
+    .schedule-item.today .day{color:var(--text)}
+    .schedule-item.done{opacity:.72}
+    .schedule-badge{font-size:12px;padding:6px 8px;border-radius:999px;background:var(--soft);color:var(--muted)}
+    .engine-note{display:flex;gap:10px;align-items:flex-start;padding:12px 14px;background:#121820;border:1px solid #283341;border-radius:15px;margin-top:12px;color:var(--muted);font-size:13px;line-height:1.5}
+    .toast{position:fixed;left:50%;bottom:calc(90px + env(safe-area-inset-bottom));transform:translate(-50%,20px);background:#eef2f5;color:#11151b;padding:11px 14px;border-radius:999px;font-weight:700;font-size:13px;opacity:0;pointer-events:none;transition:.18s;z-index:80;white-space:nowrap;max-width:90%;overflow:hidden;text-overflow:ellipsis}
+    .toast.show{opacity:1;transform:translate(-50%,0)}
+    .mini-actions{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:10px}
+    .mini-actions .secondary,.mini-actions .ghost{padding:12px}
+    .db-status{display:flex;justify-content:space-between;gap:12px;align-items:center;padding-top:8px;font-size:13px;color:var(--muted)}
+    .program-card{border:1px solid var(--line);background:var(--panel2);border-radius:18px;padding:15px;margin-top:10px}
+    .program-card:first-child{margin-top:0}
+    .program-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+    .program-head strong{font-size:16px}
+    .program-actions{display:flex;gap:8px;margin-top:12px}
+    .program-actions button{flex:1;padding:11px;border-radius:13px}
+    .calendar-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;margin-top:12px}
+    .calendar-day{min-height:104px;border:1px solid var(--line);background:#12171e;border-radius:14px;padding:7px;position:relative;transition:.16s}
+    .calendar-day.drop-target{outline:2px solid #edf2f7;transform:translateY(-2px)}
+    .calendar-day .day-label{font-size:11px;color:var(--muted);margin-bottom:7px}
+    .calendar-day.today .day-label{color:var(--text);font-weight:800}
+    .schedule-chip{background:#202731;border:1px solid #333c49;border-radius:10px;padding:7px 6px;font-size:10px;line-height:1.25;margin-top:5px;position:relative}
+    .schedule-chip.done{opacity:.52}
+    .drag-handle{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:7px;background:#151a20;border:1px solid #39424e;margin-top:5px;touch-action:none;cursor:grab;color:#9ca7b5}
+    .drag-ghost{position:fixed;z-index:100;pointer-events:none;background:#eef2f5;color:#11151b;padding:9px 12px;border-radius:12px;font-size:12px;font-weight:750;box-shadow:var(--shadow);max-width:180px}
+    .builder-row{display:grid;grid-template-columns:auto 1fr 74px 62px;gap:8px;align-items:center;padding:11px 0;border-bottom:1px solid var(--line)}
+    .builder-row:last-child{border-bottom:0}
+    .builder-row input[type=number],.text-input{width:100%;border:1px solid var(--line);background:#11151b;color:var(--text);border-radius:11px;padding:10px}
+    .builder-order{display:flex;gap:4px}
+    .builder-order button{border:1px solid var(--line);background:var(--soft);color:var(--muted);border-radius:8px;padding:5px 7px}
+    .mode-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+    .mode-btn{border:1px solid var(--line);background:var(--panel2);color:var(--text);border-radius:14px;padding:13px;text-align:left}
+    .mode-btn.selected{outline:2px solid var(--text)}
+    .mode-btn span{display:block;font-size:11px;color:var(--muted);margin-top:4px;line-height:1.35}
+    .module-progress{display:flex;gap:7px;justify-content:center;margin:22px 0}
+    .module-progress .dot{width:8px;height:8px}
+    .guided-icon{font-size:46px;margin-bottom:10px}
+    .guided-step{font-size:18px;line-height:1.6;max-width:340px;color:#dfe5ec}
+    .guided-meta{font-size:13px;color:var(--muted);margin-top:12px}
+    .standalone-actions{width:min(360px,100%);display:grid;gap:9px;margin-top:24px}
+    .guided-pause{position:absolute;top:calc(14px + env(safe-area-inset-top));right:18px;background:#1a1f27;color:var(--text);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+    .module-card{display:grid;grid-template-columns:auto 1fr;gap:10px;align-items:start;padding:11px;border:1px solid var(--line);border-radius:14px;margin-top:8px}
+    .module-card input{margin-top:4px}
+    .insight-tabs{display:flex;gap:7px;overflow-x:auto;padding:3px 0 10px;scrollbar-width:none}
+    .insight-tabs::-webkit-scrollbar{display:none}
+    .insight-tab{flex:0 0 auto;border:1px solid var(--line);background:var(--panel2);color:var(--muted);padding:9px 13px;border-radius:999px;font-weight:700}
+    .insight-tab.active{background:var(--text);color:#11151b;border-color:var(--text)}
+    .insight-panel{display:none}
+    .insight-panel.active{display:block}
+    .trend-card svg{width:100%;height:180px;display:block;margin-top:10px}
+    .trend-meta{display:flex;justify-content:space-between;gap:10px;align-items:flex-end}
+    .history-list{display:grid;gap:9px}
+    .session-row{width:100%;border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:16px;padding:13px;text-align:left;display:grid;gap:8px}
+    .session-row-top{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+    .session-row-meta{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--muted)}
+    .session-row .modules{margin-top:0}
+    .detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+    .detail-stat{border:1px solid var(--line);background:var(--panel2);border-radius:14px;padding:12px}
+    .detail-stat strong{display:block;font-size:20px;margin-top:3px}
+    .detail-table{width:100%;border-collapse:collapse;font-size:12px}
+    .detail-table th,.detail-table td{padding:9px 7px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+    .detail-table th{color:var(--muted);font-weight:650}
+    .comparison-table{width:100%;border-collapse:collapse;font-size:12px}
+    .comparison-table th,.comparison-table td{padding:10px 7px;border-bottom:1px solid var(--line);text-align:right}
+    .comparison-table th:first-child,.comparison-table td:first-child{text-align:left}
+    .decision-list{display:grid;gap:10px}
+    .decision-item{border-left:2px solid #5e6875;padding:5px 0 5px 13px}
+    .decision-item .reason{margin-top:6px}
+    .data-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+    .data-note{font-size:11px;line-height:1.45;color:var(--muted);margin-top:10px}
+    .empty-compact{padding:18px;text-align:center;color:var(--muted)}
+    .quality-badge{display:inline-flex;align-items:center;gap:5px;padding:5px 8px;border-radius:999px;border:1px solid var(--line);font-size:11px;font-weight:750}
+    .quality-good{color:#cfe8da;background:#142019;border-color:#294333}.quality-ok{color:#e8dfbe;background:#211e14;border-color:#47402a}.quality-low{color:#e9c1c1;background:#241818;border-color:#4b2e2e}
+    .sim-badge{display:inline-flex;padding:4px 7px;border-radius:999px;background:#242033;border:1px solid #463e61;color:#d9d0f3;font-size:10px;font-weight:750}
+    .revision-log{display:grid;gap:8px;margin-top:10px}.revision-item{padding:10px 12px;border:1px solid var(--line);border-radius:13px;background:#12171e}.revision-item.reversed{opacity:.55;text-decoration:line-through}
+    .qa-card{box-shadow:none}.qa-list{display:grid;gap:8px;margin-top:10px}.qa-item{display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-bottom:1px solid var(--line)}.qa-item:last-child{border-bottom:0}.qa-item input{margin-top:3px}.qa-item label{flex:1;line-height:1.45;font-size:13px}.cap-dot{width:9px;height:9px;border-radius:50%;margin-top:5px;background:#687383}.cap-dot.ok{background:#9bc7aa}.cap-dot.warn{background:#d5bd7d}
+    .quality-summary{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}.quality-summary .detail-stat{text-align:center}
+    .cycle-actions{display:flex;gap:6px}.cycle-actions button{width:auto;padding:6px 8px;border-radius:9px;font-size:11px}
+    .coach-card{border-color:#34404d;background:linear-gradient(180deg,#182129,#14191f)}
+    .coach-kicker{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:8px}
+    .coach-badge{display:inline-flex;align-items:center;gap:6px;padding:5px 8px;border-radius:999px;background:#142019;border:1px solid #294333;color:#cfe8da;font-size:11px;font-weight:750}
+    .coach-output{font-size:15px;line-height:1.65;color:#e4e9ef}
+    .coach-focus{margin-top:12px;padding:12px 14px;border-radius:14px;background:#11171d;border:1px solid #2a3541}
+    .coach-evidence{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+    .coach-evidence .detail-stat strong{font-size:17px}
+    .coach-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+    .coach-history{display:grid;gap:9px}.coach-history .decision-item{border-left-color:#6f7e8e}
+    .coach-context{white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;line-height:1.5;background:#0e1318;border:1px solid var(--line);border-radius:13px;padding:12px;max-height:320px;overflow:auto}
+
+    .coach-mode-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.coach-mode-row button{width:auto;padding:8px 11px}
+    .coach-chat{display:grid;gap:10px;margin-top:12px}.coach-messages{display:grid;gap:9px;max-height:430px;overflow:auto;padding:4px 2px}.coach-msg{max-width:88%;padding:10px 12px;border-radius:15px;line-height:1.55;font-size:13px;white-space:pre-wrap;word-break:break-word}.coach-msg.user{justify-self:end;background:#27313c;border:1px solid #384653}.coach-msg.assistant{justify-self:start;background:#12181e;border:1px solid #29333e}.coach-msg .msg-meta{display:block;font-size:10px;color:var(--muted);margin-top:5px}.coach-quick{display:flex;gap:7px;overflow:auto;padding-bottom:2px}.coach-quick button{width:auto;white-space:nowrap;padding:7px 10px;font-size:11px}.coach-compose{display:grid;grid-template-columns:1fr auto;gap:8px}.coach-compose textarea{min-height:58px;resize:vertical}.coach-compose button{width:auto;min-width:72px}.adapter-state{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:9px 11px;border:1px solid var(--line);border-radius:12px;background:#10161c;margin-top:10px}.adapter-state .status-dot{width:8px;height:8px;border-radius:50%;background:#697482;display:inline-block;margin-right:6px}.adapter-state .status-dot.on{background:#9bc7aa}.adapter-warning{font-size:11px;line-height:1.5;color:#d9cfa8;margin-top:8px}.settings-stack{display:grid;gap:9px;margin-top:10px}.settings-stack input,.settings-stack textarea{width:100%;background:#0e1318;color:var(--text);border:1px solid var(--line);border-radius:12px;padding:10px 11px;font:inherit}.settings-stack label{font-size:11px;color:var(--muted);display:grid;gap:6px}.consent-row{display:flex;align-items:flex-start;gap:9px;font-size:12px;line-height:1.45;color:var(--muted)}.consent-row input{width:auto;margin-top:3px}.external-evidence{display:grid;gap:6px;margin-top:8px}.external-evidence div{padding:7px 9px;border-radius:10px;background:#10161c;border:1px solid var(--line);font-size:11px}.coach-error{padding:10px 12px;border-radius:12px;border:1px solid #4b2e2e;background:#241818;color:#e9c1c1;font-size:12px;line-height:1.5}
+    @media(max-width:440px){.calendar-grid{gap:4px}.calendar-day{min-height:96px;padding:5px}.schedule-chip{font-size:9px;padding:6px 4px}.builder-row{grid-template-columns:auto 1fr 64px}.builder-order{grid-column:2/4}}
+    @media (min-width:700px){.app{border-left:1px solid var(--line);border-right:1px solid var(--line)}}
+  </style>
+</head>
+<body>
+<div class="app">
+  <main>
+    <section id="dashboard" class="view active">
+      <div class="topline"><div><div id="dashboardStage" class="eyebrow">训练计划</div><h1>今日训练</h1></div><div class="pill">v1.0 · Production Deploy</div></div>
+      <div class="card hero">
+        <div id="todayDuration" class="eyebrow">约 15 分钟</div>
+        <h2 id="todayTitle">Stop–Start · 控制循环</h2>
+        <p id="todayFocus">今天重点：识别兴奋变化，并在高兴奋时主动降档。</p>
+        <div id="todayModules" class="modules"></div>
+        <button id="startTraining" class="primary">开始训练</button>
+        <div class="mini-actions"><button id="deferToday" class="secondary">推迟到明天</button><button id="restoreSchedule" class="ghost">恢复安排</button></div>
+      </div>
+
+      <div class="section">
+        <div class="section-head"><h2>本周</h2><span class="muted">灵活安排</span></div>
+        <div class="card">
+          <div class="progress-row"><span>动停</span><div class="progress"><i id="weekStopBar" style="width:0%"></i></div><b id="weekStop">0/3</b></div>
+          <div class="progress-row"><span>正念</span><div class="progress"><i id="weekMindBar" style="width:0%"></i></div><b id="weekMind">0/3</b></div>
+          <div class="progress-row"><span>盆底</span><div class="progress"><i id="weekPelvicBar" style="width:0%"></i></div><b id="weekPelvic">0/3</b></div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-head"><h2>最近变化</h2><button class="ghost" style="width:auto;padding:8px 10px" data-nav="insights">查看趋势</button></div>
+        <div class="card metric-line"><div><div class="muted">平均恢复时间</div><div id="dashArt" class="metric-big">暂无</div></div><div id="dashTrend" class="trend">完成一次训练后生成</div></div>
+      </div>
+
+      <div class="section">
+        <div class="section-head"><h2>训练引擎</h2><span class="muted">自动调整</span></div>
+        <div id="adaptiveCard" class="card adaptive"><div class="muted">正在读取近期训练数据…</div></div>
+      </div>
+
+      <p class="safety">本工具用于行为训练和自我记录，不用于诊断疾病。出现持续疼痛、射精疼痛、明显泌尿症状或近期性功能突然变化时，应暂停训练并考虑专业评估。</p>
+    </section>
+
+    <section id="plan" class="view">
+      <div class="eyebrow">Training plan</div><div class="screen-title">本周计划</div><p id="planStage" class="muted">正在生成计划…</p>
+      <div class="card form-card">
+        <div class="section-head"><h2>日历</h2><span class="muted">拖动 ≡ 调整日期</span></div>
+        <div id="scheduleCalendar" class="calendar-grid"></div>
+      </div>
+      <div class="card"><h2 id="stageTitle">这一阶段练什么</h2><p id="stageDescription" class="muted" style="line-height:1.6"></p><div id="planEngineNote" class="engine-note"></div></div>
+      <div class="section">
+        <div class="section-head"><h2>训练方案</h2><span class="muted">独立模块 · 自由组合</span></div>
+        <div id="programList"></div>
+      </div>
+      <div class="section">
+        <div class="section-head"><h2>创建自己的方案</h2><span class="muted">顺序可调整</span></div>
+        <div class="card">
+          <input id="customProgramName" class="text-input" value="我的训练" maxlength="24" aria-label="训练方案名称">
+          <div id="builderModules" style="margin-top:10px"></div>
+          <div class="mini-actions"><button id="saveCustomProgram" class="secondary">保存方案</button><button id="resetBuilder" class="ghost">重置</button></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="insights" class="view">
+      <div class="eyebrow">Insights</div><div class="screen-title">数据与复盘</div><p class="muted">只和自己的近期状态比较；方案对比是描述性数据，不代表因果结论。</p>
+      <div id="insightTabs" class="insight-tabs">
+        <button class="insight-tab active" data-insight-tab="trends">趋势</button>
+        <button class="insight-tab" data-insight-tab="coach">教练</button>
+        <button class="insight-tab" data-insight-tab="history">历史</button>
+        <button class="insight-tab" data-insight-tab="compare">方案对比</button>
+        <button class="insight-tab" data-insight-tab="decisions">调整记录</button>
+        <button class="insight-tab" data-insight-tab="quality">数据质量</button>
+      </div>
+      <div id="trendPanel" class="insight-panel active"><div id="trendPanelBody" class="section"></div></div>
+      <div id="coachPanel" class="insight-panel"><div id="coachPanelBody" class="section"></div></div>
+      <div id="historyPanel" class="insight-panel"><div id="historyPanelBody" class="section"></div></div>
+      <div id="comparePanel" class="insight-panel"><div id="comparePanelBody" class="section"></div></div>
+      <div id="decisionsPanel" class="insight-panel"><div id="decisionsPanelBody" class="section"></div></div>
+      <div id="qualityPanel" class="insight-panel"><div id="qualityPanelBody" class="section"></div></div>
+    </section>
+
+    <section id="historyDetail" class="view">
+      <button class="ghost" data-back="insights" style="width:auto;padding:9px 12px;margin-bottom:14px">← 返回数据与复盘</button>
+      <div id="historyDetailBody"></div>
+    </section>
+
+    <section id="settings" class="view">
+      <div class="eyebrow">Settings</div><div class="screen-title">我的</div>
+      <div class="card form-card">
+        <div class="field"><div class="field-head"><strong>震动反馈</strong><span id="hapticLabel" class="muted">开启</span></div><button id="toggleHaptic" class="secondary">切换震动</button></div>
+        <div class="field"><div class="field-head"><strong>训练提示强度</strong><span id="promptModeLabel" class="muted">完整提示</span></div><div id="promptModes" class="mode-grid">
+          <button class="mode-btn" data-mode="full">完整提示<span>注意区 + Stop 文字 + 震动</span></button>
+          <button class="mode-btn" data-mode="haptic">震动为主<span>关键节点震动，弱化文字</span></button>
+          <button class="mode-btn" data-mode="threshold">仅阈值<span>不提示 Level 6，只提示 Stop</span></button>
+          <button class="mode-btn" data-mode="autonomous">自主模式<span>由你决定何时 Stop，系统只记录</span></button>
+        </div><div id="promptSuggestion" class="engine-note" style="display:none"></div></div>
+        <div class="field"><div class="field-head"><strong>Coach 数据边界</strong><span class="muted">本地优先</span></div><p class="small">本地 Coach 只读取通过质量筛选的摘要指标，不读取逐秒 Event Stream。外部 LLM 只有在你主动启用并发送问题时，才会收到同一份最小化摘要。</p><div class="engine-note"><span>◇</span><span>原始事件、修订日志、Session ID 和精确训练时间不会发送给外部 Coach；Training Engine 参数也不会接受模型写入。</span></div></div>
+        <div class="field"><div class="field-head"><strong>外部 LLM Adapter</strong><span id="externalCoachStatus" class="muted">关闭</span></div>
+          <p class="small">可连接你自己的 HTTPS Relay。推荐由 Relay 再调用任意模型服务；浏览器不保存第三方 API 密钥。</p>
+          <div class="settings-stack">
+            <label>Relay Endpoint<input id="externalCoachEndpoint" type="url" placeholder="https://your-relay.example.com/coach"></label>
+            <label>模型标签（可选）<input id="externalCoachModel" type="text" maxlength="80" placeholder="例如：my-coach-model"></label>
+            <label>本次页面会话令牌（可选，不保存）<input id="externalCoachToken" type="password" autocomplete="off" placeholder="关闭页面后即丢失"></label>
+            <label class="consent-row"><input id="externalCoachConsent" type="checkbox"><span>我理解：发送外部 Coach 问题时，会把最小化训练摘要、我的问题和最近几轮 Coach 对话发送到上述 Endpoint。</span></label>
+          </div>
+          <div class="data-actions"><button id="useBundledRelay" class="secondary">使用同源 Relay</button><button id="testBundledRelay" class="secondary">检测同源 Relay</button><button id="saveExternalCoach" class="secondary">保存 Adapter 设置</button><button id="disableExternalCoach" class="ghost">关闭外部 Coach</button></div>
+          <div id="relayHealthStatus" class="data-note">v1.0 自带可部署 Relay：用 relay/server.mjs 启动后，可让 PWA 与 /api/coach 同源运行。认证令牌只保存在当前页面内存，不写 IndexedDB、不进备份。</div>
+        </div>
+        <div class="field"><div class="field-head"><strong>隐私模式</strong><span class="muted">默认</span></div><p class="small">通知和训练界面使用“训练 / 等级 / 恢复”等中性表述。</p></div>
+        <div class="field"><div class="field-head"><strong>本地数据</strong><span id="sessionCount" class="muted">0 次训练</span></div><div class="db-status"><span>存储引擎</span><b id="dbStatus">IndexedDB</b></div>
+          <div class="data-actions"><button id="exportJson" class="secondary">导出 JSON 备份</button><button id="exportCsv" class="secondary">导出 CSV 摘要</button><button id="importJson" class="secondary">恢复 JSON 备份</button><button id="clearData" class="ghost">删除训练数据</button></div>
+          <input id="importBackupFile" type="file" accept="application/json,.json" hidden>
+          <div class="data-note">JSON 备份包含完整训练事件流，属于高度私密数据，请自行妥善保存。CSV 仅导出每次训练的摘要，不包含逐事件记录。</div>
+        </div>
+        <div class="field"><div class="field-head"><strong>真实使用验收</strong><span id="developerModeLabel" class="muted">关闭</span></div>
+          <button id="toggleDeveloperMode" class="secondary">打开验收工具</button>
+          <div id="developerTools" style="display:none;margin-top:12px">
+            <div class="engine-note"><span>◇</span><span>模拟数据永远不会进入真实 Adaptive Decision。只有打开“分析模拟数据”后，趋势页才会把它们显示出来。</span></div>
+            <div class="toggle-row" style="margin-top:10px"><button id="toggleSimulatedAnalysis" class="choice">分析模拟数据：关</button><button id="testHaptic" class="choice">测试震动</button></div>
+            <div class="data-actions"><button id="generateSimulation" class="secondary">生成 8 周模拟数据</button><button id="removeSimulation" class="ghost">删除模拟数据</button></div>
+            <div id="simulationStatus" class="data-note">尚未生成模拟数据。</div>
+            <div class="card qa-card" style="margin-top:12px"><h3>设备能力</h3><div id="capabilityReport" class="qa-list"></div></div>
+            <div class="card qa-card"><div class="section-head"><h3>实机测试数据</h3><span id="betaTelemetryStatus" class="small">未开启</span></div>
+              <p class="small">仅在你主动开启后收集交互质量事件，例如滑动、Stop/Resume、暂停、页面切后台和设备能力；不采集兴奋等级、身体信号内容、Coach 对话或第三方账号信息。</p>
+              <div class="data-actions"><button id="toggleBetaTelemetry" class="secondary">开启实机数据收集</button><button id="exportBetaJson" class="secondary">导出测试 JSON</button><button id="exportBetaCsv" class="secondary">导出测试 CSV</button><button id="clearBetaTelemetry" class="ghost">清空测试数据</button></div>
+              <div id="betaTelemetrySummary" class="data-note">尚未收集实机测试事件。</div>
+            </div>
+            <div class="card qa-card"><h3>手机实机验收清单</h3><p class="small">请在真实手机上逐项完成。结果保存在本机，不会影响训练数据。</p><div id="acceptanceChecklist" class="qa-list"></div><button id="resetAcceptance" class="ghost" style="margin-top:10px">重置验收结果</button></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="checkin" class="view">
+      <div class="eyebrow">开始前 · 约 10 秒</div><div class="screen-title">今天状态怎么样？</div>
+      <div class="card form-card">
+        <div class="field"><div class="field-head"><strong>压力</strong><span id="stressV">4</span></div><input id="stress" type="range" min="0" max="10" value="4"></div>
+        <div class="field"><div class="field-head"><strong>疲劳</strong><span id="fatigueV">3</span></div><input id="fatigue" type="range" min="0" max="10" value="3"></div>
+        <div class="field"><div class="field-head"><strong>盆底紧张</strong><span id="tensionV">3</span></div><input id="tension" type="range" min="0" max="10" value="3"></div>
+        <div class="field"><div class="field-head"><strong>有疼痛或明显不适吗？</strong></div><div class="toggle-row"><button class="choice selected" data-pain="false">否</button><button class="choice" data-pain="true">是</button></div><div id="painNotice" class="notice">如果存在明显或持续疼痛，建议暂停本次训练并考虑专业评估。</div></div>
+      </div>
+      <div style="height:14px"></div><button id="continueCheckin" class="primary">继续</button><div style="height:10px"></div><button class="ghost" data-back="dashboard">返回</button>
+    </section>
+
+    <section id="moduleGuide" class="view full">
+      <div class="prepare" style="position:relative">
+        <button id="guidedPause" class="guided-pause">暂停</button>
+        <div id="guidedEyebrow" class="eyebrow">训练模块</div>
+        <div id="guidedIcon" class="guided-icon">◯</div>
+        <h1 id="guidedTitle">呼吸觉察</h1>
+        <div id="guidedCount" class="count">03:00</div>
+        <div id="guidedStep" class="guided-step">自然呼吸，注意呼吸正在发生。</div>
+        <div id="guidedMeta" class="guided-meta"></div>
+        <div id="moduleDots" class="module-progress"></div>
+        <div class="standalone-actions">
+          <button id="completeModule" class="secondary">完成本模块</button>
+          <button id="skipModule" class="ghost">跳过本模块</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="session" class="view full">
+      <div id="sessionShell" class="session-shell">
+        <div class="session-top"><div><div id="phaseLabel" class="phase">兴奋建立</div><div id="phaseSub" class="small">Cycle 1 / 3</div></div><button id="pauseBtn">暂停</button></div>
+        <div id="gestureSurface" class="session-main">
+          <div id="pulse" class="pulse"></div>
+          <div id="arousal" class="arousal">2</div>
+          <div id="sessionHint" class="session-hint">↑ 上滑增加 · ↓ 下滑降低</div>
+          <div id="gestureHint" class="gesture-hint">达到阈值后按提示操作</div>
+        </div>
+        <div class="session-bottom"><div id="activeTime">00:00</div><div id="cycleDots" class="cycles"></div><div id="recoveryTime" class="timer-right"></div></div>
+        <div id="finishSheet" class="finish-sheet"><button id="finishNow" class="primary">结束训练</button><button id="cancelFinish" class="secondary">继续训练</button></div>
+        <div id="quickMarkerSheet" class="bottom-sheet" aria-hidden="true">
+          <div class="sheet-handle"></div>
+          <div class="eyebrow">Quick Marker</div>
+          <h2 style="margin-top:5px">刚才注意到了什么？</h2>
+          <p class="muted" style="font-size:13px;line-height:1.5">可选记录，不需要为了填写而打断恢复。</p>
+          <div class="sheet-grid">
+            <button class="signal-btn" data-signal="BREATH_FAST" data-label="呼吸加快">呼吸加快</button>
+            <button class="signal-btn" data-signal="BREATH_HOLD" data-label="屏住呼吸">屏住呼吸</button>
+            <button class="signal-btn" data-signal="PELVIC_TENSION" data-label="盆底紧张">盆底紧张</button>
+            <button class="signal-btn" data-signal="ABDOMEN_TENSION" data-label="腹部收紧">腹部收紧</button>
+            <button class="signal-btn" data-signal="THIGH_TENSION" data-label="大腿用力">大腿用力</button>
+            <button class="signal-btn" data-signal="GLUTE_TENSION" data-label="臀部用力">臀部用力</button>
+            <button class="signal-btn" data-signal="MOVEMENT_ACCELERATION" data-label="动作加快">动作加快</button>
+            <button class="signal-btn" data-signal="ANXIETY_SPIKE" data-label="紧张/焦虑">紧张/焦虑</button>
+          </div>
+          <button id="closeMarker" class="ghost" style="margin-top:10px">暂不记录</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="pause" class="view full">
+      <div class="prepare"><div class="eyebrow">已暂停</div><h1 id="pauseTime">00:00</h1><p class="muted">暂停期间不计入有效训练时间。</p><div style="height:30px"></div><button id="resumePause" class="primary">继续训练</button><div style="height:10px"></div><button id="endFromPause" class="ghost">结束并保存</button></div>
+    </section>
+
+    <section id="review" class="view">
+      <div class="eyebrow">Session Review</div><div class="screen-title">30 秒复盘</div><p class="muted">只记录感受，不做单次成绩排名。</p>
+      <div class="card form-card">
+        <div class="review-group"><h3 id="reviewControlTitle">今天整体控制感</h3><div class="field-head"><span class="muted">0</span><strong id="controlV">6 / 10</strong><span class="muted">10</span></div><input id="control" type="range" min="0" max="10" value="6"></div>
+        <div id="relaxReviewGroup" class="review-group"><h3>Stop 后放松容易吗？</h3><div class="field-head"><span class="muted">0</span><strong id="relaxV">6 / 10</strong><span class="muted">10</span></div><input id="relax" type="range" min="0" max="10" value="6"></div>
+        <div class="review-group"><h3>训练难度</h3><div class="chips" id="difficulty"><button class="chip">太容易</button><button class="chip selected">合适</button><button class="chip">太困难</button></div></div>
+        <div class="review-group"><h3>最明显的信号</h3><div class="chips" id="signals"><button class="chip">呼吸</button><button class="chip">盆底</button><button class="chip">腹部</button><button class="chip">大腿</button><button class="chip">臀部</button><button class="chip">紧张/焦虑</button><button class="chip selected">没有明显信号</button></div></div>
+        <div id="awarenessReviewGroup" class="review-group"><h3>有没有提前发现兴奋在升高？</h3><div class="chips" id="awareness"><button class="chip">完全没有</button><button class="chip">一点</button><button class="chip selected">比较明显</button><button class="chip">很早就发现</button></div></div>
+      </div>
+      <div style="height:14px"></div><button id="saveReview" class="primary">完成复盘</button>
+    </section>
+
+    <section id="summary" class="view">
+      <div class="eyebrow">完成</div><div class="screen-title">本次训练</div><p id="summaryProgram" class="muted"></p>
+      <div class="summary-grid">
+        <div class="summary-metric"><span class="muted">控制循环</span><strong id="sumCycles">0</strong></div>
+        <div class="summary-metric"><span class="muted">平均 ART</span><strong id="sumArt">—</strong></div>
+        <div class="summary-metric"><span class="muted">Level 8</span><strong id="sumOvershoot">0</strong></div>
+        <div class="summary-metric"><span class="muted">控制感</span><strong id="sumControl">—</strong></div>
+      </div>
+      <div class="chart-wrap"><div class="section-head"><h2>兴奋度曲线</h2><span class="small">0–9 主观训练量表</span></div><svg id="chart" viewBox="0 0 480 220" preserveAspectRatio="none"></svg></div>
+      <div id="betaFeedbackCard" class="card" style="display:none;margin-top:14px">
+        <div class="section-head"><h2>实机体验记录</h2><span class="small">可选 · 仅本机</span></div>
+        <p class="small">用于改进手势与反馈体验，不记录兴奋度或逐秒训练内容。</p>
+        <div class="field"><div class="field-head"><strong>手势稳定度</strong><span id="betaGestureV">3</span></div><input id="betaGesture" type="range" min="1" max="5" value="3"></div>
+        <div class="field"><div class="field-head"><strong>震动辨识度</strong><span id="betaHapticV">3</span></div><input id="betaHapticRating" type="range" min="1" max="5" value="3"></div>
+        <div class="field"><div class="field-head"><strong>操作干扰程度</strong><span id="betaInterferenceV">3</span></div><input id="betaInterference" type="range" min="1" max="5" value="3"></div>
+        <button id="saveBetaFeedback" class="secondary">保存本次实机反馈</button>
+      </div>
+      <div id="summaryCoachCard" class="card coach-card" style="margin-top:14px"></div>
+      <div class="coach-actions"><button id="summaryOpenCoach" class="secondary">查看完整教练复盘</button><button id="summaryDone" class="primary">回到今日</button></div>
+    </section>
+  </main>
+
+  <nav id="mainNav" class="nav">
+    <button class="active" data-nav="dashboard">今日</button><button data-nav="plan">计划</button><button data-nav="insights">趋势</button><button data-nav="settings">我的</button>
+  </nav>
+</div>
+<div id="toast" class="toast"></div>
+<script src="db.js"></script>
+<script src="app.js"></script>
+
+</body>
+</html>

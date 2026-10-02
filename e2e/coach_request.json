@@ -1,0 +1,29 @@
+{
+  "schema": "coach-chat-request-v1",
+  "policy": {
+    "explainOnly": true,
+    "mayModifyTrainingEngine": false,
+    "rawEventsAllowed": false,
+    "medicalDiagnosisAllowed": false,
+    "trainingParameterAdviceAllowed": false
+  },
+  "model": null,
+  "context": {
+    "schema": "coach-context-v1",
+    "generatedAt": 1,
+    "source": "real",
+    "stage": {"week": 3, "name": "恢复能力"},
+    "promptMode": "full",
+    "samples": {"completed": 4, "stopStart": 4, "usable": 3, "excluded": 1, "recent": 3, "previous": 0},
+    "recent": {"count": 3, "meanArtSec": 34, "medianArtSec": 33, "csr": 0.8, "overshootRate": 0.2, "control": 7, "stopLevel": 7, "pelvicTension": 4, "stress": 3, "fatigue": 3},
+    "previous": {"count": 0},
+    "change": {"artPct": null, "overshootDelta": null, "controlDelta": null, "stopLevelDelta": null},
+    "signals": [{"label": "盆底紧张", "count": 2, "sessionRate": 0.66}],
+    "latestState": {"pain": false, "difficulty": "合适", "awareness": "比较明显"},
+    "adaptive": {"type": "KEEP_CURRENT_DIFFICULTY", "title": "保持当前难度", "reason": "继续积累稳定样本", "applied": false},
+    "privacy": {"rawEventsIncluded": false, "exactTimestampsIncluded": false, "sessionIdsIncluded": false, "revisionsIncluded": false}
+  },
+  "conversation": [],
+  "message": "请用两三句话解释下一次训练应该关注什么。",
+  "responseFormat": {"schema": "coach-chat-response-v1", "allowedFields": ["answer", "focus", "evidence", "uncertainty", "safetyNotice"]}
+}

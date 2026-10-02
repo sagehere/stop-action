@@ -1,0 +1,57 @@
+services:
+  stop-action:
+    image: ${STOP_ACTION_IMAGE:-ghcr.io/sagehere/stop-action:latest}
+    pull_policy: always
+    restart: unless-stopped
+    ports:
+      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-8787}:8787"
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8787
+      STATIC_ROOT: /app
+      TRUST_PROXY: "1"
+      OPENAI_API_KEY_FILE: /run/secrets/openai_api_key
+      RELAY_BEARER_TOKEN_FILE: /run/secrets/relay_bearer_token
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.6-luna}
+      ALLOWED_MODELS: ${ALLOWED_MODELS:-gpt-5.6-luna}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      RATE_LIMIT_BACKEND: redis
+      REDIS_URL: redis://redis:6379/0
+      RATE_LIMIT_FAIL_CLOSED: ${RATE_LIMIT_FAIL_CLOSED:-1}
+      RATE_LIMIT_WINDOW_MS: ${RATE_LIMIT_WINDOW_MS:-60000}
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-20}
+      REDIS_CONNECT_TIMEOUT_MS: ${REDIS_CONNECT_TIMEOUT_MS:-1200}
+      UPSTREAM_TIMEOUT_MS: ${UPSTREAM_TIMEOUT_MS:-18000}
+      UPSTREAM_TOTAL_TIMEOUT_MS: ${UPSTREAM_TOTAL_TIMEOUT_MS:-30000}
+      UPSTREAM_RETRY_COUNT: ${UPSTREAM_RETRY_COUNT:-1}
+    secrets:
+      - openai_api_key
+      - relay_bearer_token
+    depends_on:
+      redis:
+        condition: service_healthy
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "64mb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    logging:
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+secrets:
+  openai_api_key:
+    file: ./secrets/openai_api_key.txt
+  relay_bearer_token:
+    file: ./secrets/relay_bearer_token.txt
