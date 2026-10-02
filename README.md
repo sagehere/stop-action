@@ -53,6 +53,360 @@ docker compose up -d
 
 然后用你已经部署的 Nginx Proxy Manager、Caddy 等代理到该端口即可。更多说明见 [`deploy/README.md`](deploy/README.md)。
 
+## 使用 Dockge 部署
+
+如果你已经在服务器上使用 [Dockge](https://github.com/louislam/dockge) 管理 Docker Compose，推荐把 Stop Action 作为一个独立 Stack 部署。Dockge 只负责管理本项目的 Compose；Nginx Proxy Manager、Caddy、Traefik、证书和 ACME 继续独立维护。
+
+### 1. 推荐结构
+
+~~~text
+Internet
+   │
+   ▼
+NPM / Caddy / Traefik
+   │
+   ▼
+stop-action:8787
+   │
+   ▼
+redis:6379
+~~~
+
+本 Stack 只包含 **stop-action + Redis**。Redis 仅用于 Coach Relay 的限流，不保存训练历史。
+
+### 2. 在 Dockge 创建 Stack
+
+1. 打开 Dockge，选择 **New Stack**。
+2. Stack 名称填写 **stop-action**。
+3. 将仓库中的 deploy/docker-compose.yml 内容复制到 Dockge 的 Compose 编辑器。
+4. 保存后不要立即启动，先配置 ENV 和 Secret。
+
+Dockge 默认的 Stack 目录通常类似：
+
+~~~text
+/opt/stacks/stop-action/
+├── compose.yaml
+├── .env
+└── secrets/
+~~~
+
+如果你的 Dockge 修改过 Stacks Directory，以实际目录为准。
+
+### 3. 配置 ENV
+
+在 Dockge 的 ENV 编辑器中填入：
+
+~~~dotenv
+STOP_ACTION_IMAGE=ghcr.io/sagehere/stop-action:latest
+
+APP_BIND=127.0.0.1
+APP_PORT=8787
+
+ALLOWED_ORIGINS=https://training.example.com
+
+OPENAI_MODEL=gpt-5.6-luna
+ALLOWED_MODELS=gpt-5.6-luna
+OPENAI_BASE_URL=https://api.openai.com/v1
+
+RATE_LIMIT_WINDOW_MS=60000
+RATE_LIMIT_MAX=20
+RATE_LIMIT_FAIL_CLOSED=1
+REDIS_CONNECT_TIMEOUT_MS=1200
+
+UPSTREAM_TIMEOUT_MS=18000
+UPSTREAM_TOTAL_TIMEOUT_MS=30000
+UPSTREAM_RETRY_COUNT=1
+~~~
+
+其中最重要的是 **APP_BIND、APP_PORT、ALLOWED_ORIGINS**。
+
+#### APP_BIND 怎么选
+
+如果 NPM / Caddy 直接运行在宿主机上，推荐：
+
+~~~dotenv
+APP_BIND=127.0.0.1
+APP_PORT=8787
+~~~
+
+这样 8787 不直接暴露公网。
+
+如果反向代理本身也运行在 Docker 中，它通常无法直接访问宿主机的 127.0.0.1。此时有两种做法。
+
+**方案 A：监听宿主机端口**
+
+~~~dotenv
+APP_BIND=0.0.0.0
+APP_PORT=8787
+~~~
+
+然后让反向代理访问 宿主机IP:8787。使用这种方式时，建议用防火墙限制 8787 的公网访问。
+
+**方案 B：共享 Docker 外部网络，推荐**
+
+先创建一个公共反代网络：
+
+~~~bash
+docker network create proxy
+~~~
+
+然后在 Compose 中为 stop-action 增加外部网络：
+
+~~~yaml
+services:
+  stop-action:
+    networks:
+      - default
+      - proxy
+
+networks:
+  proxy:
+    external: true
+~~~
+
+并让 NPM / Caddy 也加入同一个 proxy 网络。这样反代可以直接访问：
+
+~~~text
+stop-action:8787
+~~~
+
+如果完全通过共享 Docker 网络反代，还可以删除 stop-action 的 ports 映射，让 8787 只存在于 Docker 网络内部。
+
+#### ALLOWED_ORIGINS
+
+填写最终访问本项目的公网 Origin，必须带协议：
+
+~~~dotenv
+ALLOWED_ORIGINS=https://training.example.com
+~~~
+
+多个域名用英文逗号分隔：
+
+~~~dotenv
+ALLOWED_ORIGINS=https://training.example.com,https://training2.example.com
+~~~
+
+不要加入路径。
+
+### 4. 创建 Secret 文件
+
+Compose 使用文件 Secret。通过 Dockge Terminal 或 SSH 进入 Stack 目录：
+
+~~~bash
+cd /opt/stacks/stop-action
+mkdir -p secrets
+umask 077
+~~~
+
+如果暂时不用外部 AI Coach，也需要创建两个空文件：
+
+~~~bash
+: > secrets/openai_api_key.txt
+: > secrets/relay_bearer_token.txt
+chmod 600 secrets/*.txt
+~~~
+
+如果要启用外部 AI Coach：
+
+~~~bash
+printf '%s' 'YOUR_OPENAI_API_KEY' > secrets/openai_api_key.txt
+chmod 600 secrets/openai_api_key.txt
+~~~
+
+可选地为 Relay 生成 Bearer Token：
+
+~~~bash
+openssl rand -hex 32 > secrets/relay_bearer_token.txt
+chmod 600 secrets/relay_bearer_token.txt
+~~~
+
+不要把真实 API Key 或 Token 写入 compose.yaml、.env、README 或 Git 仓库。
+
+### 5. 在 Dockge 启动
+
+回到 stop-action Stack，点击 **Deploy**。启动后应看到两个服务：
+
+~~~text
+stop-action    Running / Healthy
+redis          Running / Healthy
+~~~
+
+也可以在终端检查：
+
+~~~bash
+docker compose ps
+curl http://127.0.0.1:8787/api/ready
+curl http://127.0.0.1:8787/api/health
+~~~
+
+ready 用于应用就绪检查，health 用于 Relay 状态检查。
+
+### 6. Nginx Proxy Manager 配置
+
+如果通过宿主机端口连接：
+
+~~~text
+Domain Names:       training.example.com
+Scheme:             http
+Forward Hostname:   宿主机 IP
+Forward Port:       8787
+~~~
+
+如果 NPM 与 Stop Action 共享 proxy 网络：
+
+~~~text
+Forward Hostname:   stop-action
+Forward Port:       8787
+Scheme:             http
+~~~
+
+然后在 NPM 中申请 HTTPS 证书并开启 Force SSL。
+
+### 7. Caddy 配置
+
+如果 Caddy 运行在宿主机：
+
+~~~caddyfile
+training.example.com {
+    reverse_proxy 127.0.0.1:8787
+}
+~~~
+
+如果 Caddy 与应用共享 proxy 网络：
+
+~~~caddyfile
+training.example.com {
+    reverse_proxy stop-action:8787
+}
+~~~
+
+域名变化后记得同步修改 ALLOWED_ORIGINS，然后重新 Deploy。
+
+### 8. 首次部署检查
+
+建议逐项确认：
+
+- 首页能正常打开。
+- 我的 → 数据存储 显示 IndexedDB 正常。
+- 可以开始并完成一次训练。
+- 刷新网页后训练记录仍存在。
+- PWA 可以安装。
+- 如果启用外部 Coach，Relay Health 检查通过。
+- 实机测试 JSON / CSV 可以正常导出。
+
+### 9. 在 Dockge 中更新
+
+默认镜像：
+
+~~~text
+ghcr.io/sagehere/stop-action:latest
+~~~
+
+GitHub Actions 发布新镜像后，在 Dockge 中执行 **Update / Pull / Redeploy** 即可。也可以使用终端：
+
+~~~bash
+docker compose pull
+docker compose up -d
+docker compose images
+~~~
+
+更新服务器镜像不会清空浏览器中的训练记录，因为训练历史默认保存在客户端 IndexedDB。
+
+### 10. 固定版本与回滚
+
+测试环境可以使用 latest；生产环境建议固定版本 Tag 或提交镜像。
+
+例如：
+
+~~~dotenv
+STOP_ACTION_IMAGE=ghcr.io/sagehere/stop-action:v1.0.0
+~~~
+
+或者：
+
+~~~dotenv
+STOP_ACTION_IMAGE=ghcr.io/sagehere/stop-action:sha-xxxxxxx
+~~~
+
+出现问题时把 STOP_ACTION_IMAGE 改回已知稳定版本，然后重新 Deploy 即可完成回滚。
+
+### 11. 备份与迁移
+
+服务器端建议备份：
+
+~~~text
+/opt/stacks/stop-action/
+├── compose.yaml
+├── .env
+└── secrets/
+~~~
+
+Redis 默认没有业务持久化数据；训练记录保存在用户浏览器 IndexedDB。
+
+如果要更换域名、手机或浏览器，建议先在应用中导出训练 JSON 备份，再在新环境恢复。
+
+### 12. 常见故障
+
+#### Secret 文件不存在
+
+检查：
+
+~~~bash
+cd /opt/stacks/stop-action
+ls -la secrets/
+~~~
+
+至少应该存在 openai_api_key.txt 和 relay_bearer_token.txt；即使不使用外部 Coach，也要创建空文件。
+
+#### NPM / Caddy 出现 502
+
+先在宿主机测试：
+
+~~~bash
+curl http://127.0.0.1:8787/api/ready
+~~~
+
+如果本机正常而反代失败，通常是反代容器无法访问宿主机 127.0.0.1。可改用 APP_BIND=0.0.0.0，或更推荐让反代和应用共享 Docker 网络。
+
+#### GHCR 拉取 denied / unauthorized
+
+确认 Package 是否允许公开读取。如果需要认证：
+
+~~~bash
+docker login ghcr.io
+~~~
+
+登录后在 Dockge 中重新 Pull / Deploy。
+
+#### 页面正常但外部 Coach 不工作
+
+检查：
+
+- secrets/openai_api_key.txt 是否为空。
+- OPENAI_MODEL 与 ALLOWED_MODELS 是否一致。
+- ALLOWED_ORIGINS 是否与实际 HTTPS 域名完全一致。
+- 修改 Secret 后是否重新 Deploy。
+- 反代是否允许 /api/coach、/api/health、/api/ready。
+
+#### PWA 无法安装
+
+公网环境应使用 HTTPS。普通 HTTP 站点通常不会被浏览器视为可安装 PWA，localhost 开发环境除外。
+
+#### ARM 服务器能否运行
+
+可以。GitHub Actions 同时构建 linux/amd64 和 linux/arm64，Docker 会自动选择当前服务器架构对应的镜像。
+
+### 13. 推荐的最终部署方式
+
+- Dockge 只管理 Stop Action + Redis。
+- NPM / Caddy 独立部署。
+- 反代与应用优先通过共享 Docker 外部网络通信。
+- 不把 8787 直接暴露公网。
+- API Key 只通过 Secret 文件提供。
+- 测试环境跟随 latest；生产环境固定 vX.Y.Z 或 sha 标签。
+- 训练数据保持 Local-first，并定期使用应用内 JSON 导出备份。
+
+
 ## Docker 镜像
 
 GitHub Actions 在 `main` 更新和 `v*` 标签推送后构建：
