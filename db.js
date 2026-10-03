@@ -39,6 +39,7 @@
       };
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error || new Error('Unable to open IndexedDB'));
+      request.onblocked = () => {const status=document.getElementById('dbStatus');if(status)status.textContent='数据库升级受阻，请关闭其他标签页后重试';window.dispatchEvent(new CustomEvent('training-db-blocked'));};
     });
   }
 
@@ -81,17 +82,17 @@
         });
         await transactionDone(tx);
       }
-    } catch (_) {}
+    } catch (error) { throw new Error('旧训练迁移失败，原数据已保留：' + error.message); }
 
     try {
       const pending = JSON.parse(localStorage.getItem('ec-current-session') || 'null');
       if (pending && pending.id) await rawSetMeta('currentSession', pending);
-    } catch (_) {}
+    } catch (error) { throw new Error('旧当前训练迁移失败，原数据已保留：' + error.message); }
 
     try {
       const settings = JSON.parse(localStorage.getItem('ec-training-settings-v1') || 'null');
       if (settings) await rawSetMeta('settings', settings);
-    } catch (_) {}
+    } catch (error) { throw new Error('旧设置迁移失败，原数据已保留：' + error.message); }
 
     await rawSetMeta('legacy-v1-migrated', { at: Date.now(), importedSessions });
     localStorage.removeItem('ec-training-prototype-v1');
@@ -102,6 +103,7 @@
   async function init() {
     if (!('indexedDB' in window)) throw new Error('This browser does not support IndexedDB');
     db = await openDatabase();
+    db.onversionchange = () => { db.close(); window.dispatchEvent(new CustomEvent('training-db-blocked')); };
     await migrateLegacyLocalStorage();
     return true;
   }
@@ -115,9 +117,10 @@
   }
 
   function putSession(session) {
+    const snapshot=structuredClone(session);
     return enqueueWrite(async () => {
       const tx = db.transaction(SESSION_STORE, 'readwrite');
-      tx.objectStore(SESSION_STORE).put(structuredClone(session));
+      tx.objectStore(SESSION_STORE).put(snapshot);
       await transactionDone(tx);
     });
   }
@@ -136,7 +139,8 @@
   }
 
   function setMeta(key, value) {
-    return enqueueWrite(() => rawSetMeta(key, structuredClone(value)));
+    const snapshot = structuredClone(value);
+    return enqueueWrite(() => rawSetMeta(key, snapshot));
   }
 
   function deleteMeta(key) {
@@ -174,7 +178,34 @@
       kv.delete('acceptanceResults');
       kv.delete('betaTelemetry');
       kv.delete('betaInstallId');
+      for (const key of ['customPrograms','longTemplates','longPlans','activeLongPlanId','acceptedParameters','parameterHistory','migration-long-v1']) kv.delete(key);
       await transactionDone(tx);
+    });
+  }
+
+  function importData(sessions, meta, replace = false) {
+    const rows = structuredClone(sessions), values = structuredClone(meta);
+    return enqueueWrite(async () => {
+      const tx = db.transaction([SESSION_STORE, KV_STORE], 'readwrite');
+      const done = transactionDone(tx), store = tx.objectStore(SESSION_STORE), kv = tx.objectStore(KV_STORE);
+      try {
+        if (replace) { store.clear(); kv.clear(); }
+        rows.forEach(row => store.put(row));
+        Object.entries(values).forEach(([key, value]) => kv.put({ key, value, updatedAt: Date.now() }));
+      } catch (error) { tx.abort(); await done.catch(() => {}); throw error; }
+      await done;
+    });
+  }
+  function completeSession(session, meta = {}) {
+    const snapshot = structuredClone(session), values = structuredClone(meta);
+    return enqueueWrite(async () => {
+      const tx = db.transaction([SESSION_STORE, KV_STORE], 'readwrite');
+      const done = transactionDone(tx);
+      tx.objectStore(SESSION_STORE).put(snapshot);
+      const kv = tx.objectStore(KV_STORE);
+      kv.delete('currentSession');
+      Object.entries(values).forEach(([key, value]) => kv.put({ key, value, updatedAt: Date.now() }));
+      await done;
     });
   }
 
@@ -189,6 +220,6 @@
     setCurrentSession,
     getCurrentSession,
     clearCurrentSession,
-    clearTrainingData
+    clearTrainingData, importData, completeSession
   };
 })();

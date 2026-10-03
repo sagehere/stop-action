@@ -54,3 +54,11 @@ docker compose up -d
 ```
 
 No reverse-proxy container, certificate volume, or ACME configuration is managed by this repository.
+
+## v2 readiness and release gates
+
+`GET /api/ready` checks the core application resources. Empty model secrets do not make the local application unhealthy. `GET /api/coach/ready` checks model configuration and rate limiter availability; `/api/health` retains compatibility fields. Configure proxies to pass the new endpoint too. A Coach failure does not block training.
+
+Bearer authentication remains optional for personal deployments. Only enable `TRUST_PROXY=1` when the Relay is reachable exclusively through a trusted proxy that overwrites forwarded headers. The proxy must prevent direct public access to the Relay. Keep secrets outside the public directory; the runtime image copies no deployment files. Public static resources are an exact whitelist; source, hidden and deployment paths return404.
+
+CI runs QA and Linux Chromium/WebKit checks before building/pushing images. Pin a version or digest, retain the previous digest, and export a migration-before backup from each browser. Server downgrade alone does not downgrade IndexedDB or Service Worker. Client backup/restore and historical-version recovery tests are documented in `docs/MIGRATION_AND_BACKUP.md`; container rollback and Android/iPhone checks remain deployment acceptance tasks.

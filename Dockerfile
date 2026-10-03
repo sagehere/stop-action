@@ -1,7 +1,8 @@
 FROM node:22-alpine
 
 WORKDIR /app
-COPY --chown=node:node . /app
+COPY --chown=node:node index.html app.js db.js content.js training-core.js plans.js plan-ui.js backup.js sw.js manifest.webmanifest icon.svg /app/
+COPY --chown=node:node relay/server.mjs relay/rate_limit.mjs /app/relay/
 
 ENV HOST=0.0.0.0 \
     PORT=8787 \

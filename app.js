@@ -10,7 +10,10 @@
   const DEFAULT_STOP_THRESHOLD = 7;
   const DEFAULT_RESUME_THRESHOLD = 5;
   const DAY_MS = 86400000;
-  const APP_VERSION = '1.0.0';
+  const APP_VERSION = '2.0.0';
+  const Core = window.TrainingCore, Content = window.TrainingContent, Long = window.LongPlanUI, Backup = window.TrainingBackup;
+  let acceptedParameters={stopThreshold:7,resumeThreshold:5},parameterHistory=[],saveInFlight=false,guideLastElapsed=0,checkpointTimer=null,wakeLock=null,waitingWorker=null,moduleActionReadyAt=0;
+  let pendingRestore=null,restorePreview=null,updateRequested=false,insightFilter={plan:'',stage:'',program:'',mode:'',clock:'2',from:'',to:''};
   const BETA_MAX_EVENTS = 2500;
 
   const STAGES = {
@@ -47,6 +50,7 @@
       instruction: '保持自然呼吸，留意腹部、臀部和盆底是否仍在持续用力，允许多余的张力慢慢释放。'
     }
   };
+  Object.entries(Content.modules).forEach(([key,text])=>EXERCISES[key].instruction=text.short);
 
   const PROMPT_MODES = {
     full: '完整提示',
@@ -219,6 +223,7 @@
     views.forEach(v => v.classList.toggle('active', v.id === id));
     mainNav.style.display = ['dashboard', 'plan', 'insights', 'settings'].includes(id) ? 'grid' : 'none';
     window.scrollTo(0, 0);
+    const heading=document.getElementById(id)?.querySelector?.('h1,.screen-title');if(heading){heading.setAttribute('tabindex','-1');heading.focus?.({preventScroll:true});}
   }
   function navTo(id) {
     show(id);
@@ -232,7 +237,7 @@
     if (settings.haptics && navigator.vibrate) navigator.vibrate(pattern);
   }
 
-  function stage() { return STAGES[clamp(plan?.currentWeek ?? 0, 0, 8)]; }
+  function stage() { return Long.stage() || STAGES[clamp(plan?.currentWeek ?? 0, 0, 8)]; }
 
   function builtInPrograms() {
     const cycles = stage().cycles;
@@ -300,13 +305,15 @@
   }
 
   function persistCurrentSoon() {
-    if (currentSession) DB.setCurrentSession(currentSession).catch(() => {});
+    if (!currentSession || currentSession.phase==='COMPLETED') return Promise.resolve();
+    if(currentSession.phase==='MODULE_ACTIVE'&&!currentSession.pausedAt)updateGuidedClock();
+    const snapshot=Core.checkpoint(currentSession);
+    $('#saveStatus').textContent='正在保存';
+    return DB.setCurrentSession(snapshot).then(()=>{$('#saveStatus').textContent='已保存';}).catch(error=>{$('#saveStatus').textContent='保存失败 · 可重试或导出';console.error('Training save failed',error);});
   }
   function activeElapsed() {
     if (!currentSession) return 0;
-    let ms = currentSession.activeAccumulatedMs || 0;
-    if (currentSession.activeStartedAt && !currentSession.pausedAt) ms += now() - currentSession.activeStartedAt;
-    return ms;
+    return Core.elapsed(currentSession);
   }
   function stopActiveClock() {
     if (currentSession?.activeStartedAt) {
@@ -330,7 +337,7 @@
   }
 
   function analysisSessions() {
-    return sessionCache.filter(s => !s.simulated || settings.includeSimulatedData);
+    return sessionCache.filter(s => (!s.simulated || settings.includeSimulatedData)&&!s.rehearsal&&(!insightFilter.plan||s.longPlanId===insightFilter.plan)&&(!insightFilter.stage||s.planSnapshot?.stageName===insightFilter.stage)&&(!insightFilter.program||s.programSnapshot?.name===insightFilter.program)&&(!insightFilter.mode||s.promptModeSnapshot===insightFilter.mode)&&(!insightFilter.clock||String(s.clockVersion||1)===insightFilter.clock)&&(!insightFilter.from||dateKey(new Date(sessionTimestamp(s)))>=insightFilter.from)&&(!insightFilter.to||dateKey(new Date(sessionTimestamp(s)))<=insightFilter.to));
   }
   function activeRevisions(s) {
     const revisions = Array.isArray(s.revisions) ? s.revisions : [];
@@ -366,7 +373,7 @@
       if (artMissing) { issues.push(`${artMissing} 个 Cycle 缺少有效 ART`); score -= Math.min(30, artMissing * 10); }
       const artOdd = cycles.filter(c => Number.isFinite(c.artMs) && (c.artMs < 3000 || c.artMs > 300000)).length;
       if (artOdd) { issues.push(`${artOdd} 个 ART 值明显异常`); score -= Math.min(20, artOdd * 8); }
-      const missingLevel = cycles.filter(c => !Number.isFinite(Number(c.stopLevel)) || !Number.isFinite(Number(c.resumeLevel))).length;
+      const missingLevel = cycles.filter(c => !Number.isFinite(c.stopLevel) || !Number.isFinite(c.resumeLevel)).length;
       if (missingLevel) { issues.push(`${missingLevel} 个 Cycle 缺少 Stop/Resume Level`); score -= Math.min(24, missingLevel * 8); }
       const expectedArousal = Math.max(4, cycles.length * 3);
       if (arousalEvents.length < expectedArousal) { issues.push('兴奋度记录较稀疏'); score -= 15; }
@@ -401,7 +408,7 @@
       stopCount,
       csr: stopCount ? cycles.length / stopCount : null,
       meanART: average(arts),
-      medianART: arts.length ? [...arts].sort((a,b)=>a-b)[Math.floor(arts.length / 2)] : null,
+      medianART: Core.median(arts),
       overshoot,
       overshootRate: stopCount ? Math.min(1, overshoot / stopCount) : null,
       control: s.review?.control ?? null,
@@ -410,7 +417,7 @@
       fatigue: s.checkin?.fatigue ?? null,
       difficulty: s.review?.difficulty ?? null,
       awareness: s.review?.awareness ?? null,
-      meanStopLevel: average(cycles.map(c => Number(c.stopLevel)).filter(Number.isFinite)),
+      meanStopLevel: average(cycles.map(c => c.stopLevel).filter(Number.isFinite)),
       activeMinutes: Number.isFinite(s.activeAccumulatedMs) ? s.activeAccumulatedMs / 60000 : null
     };
   }
@@ -434,7 +441,9 @@
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(s);
     });
-    return [...groups.entries()].sort((a,b)=>a[0].localeCompare(b[0])).slice(-8).map(([key, sessions]) => {
+    const observed=[...groups.keys()].sort();if(!observed.length)return [];
+    const end=observed.at(-1)>weekStartKey(now())?observed.at(-1):weekStartKey(now()),first=observed[0],weeks=Math.min(52,Math.floor(LongPlans.dayDistance(first,end)/7)+1);
+    return Array.from({length:weeks},(_,index)=>{const key=LongPlans.addDays(end,-7*(weeks-1-index));return [key,groups.get(key)||[]];}).map(([key, sessions]) => {
       const metrics=sessions.map(computeMetrics);
       return {
         key, label:key.slice(5), count:sessions.length,
@@ -447,7 +456,7 @@
   }
   function renderLineChart(svg, rows, key, options = {}) {
     if (!svg) return;
-    const points = rows.map(r => ({label:r.label, value:r[key]})).filter(p => Number.isFinite(p.value));
+    const points = rows.map((r,index) => ({label:r.label, value:r[key],index})).filter(p => Number.isFinite(p.value));
     if (!points.length) { svg.innerHTML='<text x="18" y="90" fill="#7f8a98" font-size="13">暂无足够数据</text>'; return; }
     const w=480,h=180,padL=34,padR=16,padT=16,padB=30;
     let min = Number.isFinite(options.min) ? options.min : Math.min(...points.map(p=>p.value));
@@ -456,10 +465,10 @@
     const range=max-min;
     const coords=points.map((p,i)=>({
       ...p,
-      x:padL+(points.length===1?0.5:i/(points.length-1))*(w-padL-padR),
+      x:padL+(rows.length===1?0.5:p.index/(rows.length-1))*(w-padL-padR),
       y:h-padB-((p.value-min)/range)*(h-padT-padB)
     }));
-    const path=coords.map((p,i)=>(i?'L':'M')+p.x.toFixed(1)+','+p.y.toFixed(1)).join(' ');
+    const path=coords.map((p,i)=>(i&&p.index===coords[i-1].index+1?'L':'M')+p.x.toFixed(1)+','+p.y.toFixed(1)).join(' ');
     const grid=[0,0.5,1].map(t=>{
       const y=padT+t*(h-padT-padB), val=max-t*range;
       return `<line x1="${padL}" y1="${y}" x2="${w-padR}" y2="${y}" stroke="#252b34" stroke-width="1"/><text x="2" y="${y+4}" fill="#74808d" font-size="10">${options.format?options.format(val):Math.round(val*10)/10}</text>`;
@@ -469,7 +478,7 @@
     svg.innerHTML=grid+`<path d="${path}" fill="none" stroke="#edf2f7" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>`+dots+labels;
   }
   function csvCell(value) {
-    const text=String(value ?? '');
+    const raw=String(value ?? ''),text=/^[=+@-]/.test(raw)?"'"+raw:raw;
     return /[",\n]/.test(text) ? `"${text.replaceAll('"','""')}"` : text;
   }
   function downloadBlob(content, filename, type) {
@@ -522,20 +531,21 @@
   }
 
   function adaptiveEngine(sessions, options = {}) {
-    const completed = sessions.filter(s => s.review && s.endedAt && (options.allowSimulated || !s.simulated));
+    const completed = sessions.filter(s => s.review && s.endedAt&&!s.rehearsal && (options.allowSimulated || !s.simulated));
     const lastAny = completed[completed.length - 1];
     if (lastAny?.checkin?.pain) {
       return {
-        type: 'SAFETY_REVIEW_REQUIRED', title: '先确认身体状态',
+        type: 'SAFETY_REVIEW_REQUIRED', title: '先暂停并确认身体状态',
         reason: '最近一次训练记录了疼痛或明显不适。建议暂停强度升级；如果症状持续或明显，应考虑专业评估。',
-        stopThreshold: 6, resumeThreshold: 4, applied: true
+        stopThreshold: 6, resumeThreshold: 4, applied: false
       };
     }
-    const stopSessions = completed.filter(s => hasExercise(s, 'stop_start') && dataQuality(s).usableForTrend);
+    let stopSessions = completed.filter(s => hasExercise(s, 'stop_start') && dataQuality(s).usableForTrend&&(options.allowSimulated||s.clockVersion===2));
+    const condition=stopSessions.at(-1);if(condition)stopSessions=stopSessions.filter(s=>Core.conditionKey(s)===Core.conditionKey(condition));
     if (!stopSessions.length) {
       return {
         type: 'ESTABLISH_BASELINE', title: '先建立个人基线',
-        reason: '完成几次动停训练后，引擎会比较恢复速度、控制循环和主观控制感，再决定是否调整。',
+        reason: '先积累同条件、同计时口径的记录。系统提出产品规则建议，由你确认，不作疗效判断。',
         stopThreshold: DEFAULT_STOP_THRESHOLD, resumeThreshold: DEFAULT_RESUME_THRESHOLD, applied: false
       };
     }
@@ -549,7 +559,7 @@
       return {
         type: 'LOWER_STOP_THRESHOLD', title: '下一次提前一点 Stop',
         reason: '近期训练偏难或较频繁进入 Level 8。下一次把 Stop 阈值临时提前到 6，重点练习更早识别和恢复。',
-        stopThreshold: 6, resumeThreshold: 4, applied: true
+        stopThreshold: 6, resumeThreshold: 4, applied: false
       };
     }
     const previousArts = stopSessions.slice(-4, -1).map(computeMetrics).map(m => m.meanART).filter(Number.isFinite);
@@ -558,7 +568,7 @@
       return {
         type: 'RECOVERY_FOCUS', title: '下一次优先练恢复',
         reason: '最近一次恢复时间高于近期水平，同时盆底紧张评分较高。保持原阈值，但增加呼吸与盆底释放提示。',
-        stopThreshold: DEFAULT_STOP_THRESHOLD, resumeThreshold: DEFAULT_RESUME_THRESHOLD, applied: true
+        stopThreshold: DEFAULT_STOP_THRESHOLD, resumeThreshold: DEFAULT_RESUME_THRESHOLD, applied: false
       };
     }
     const avgCSR = average(metrics.map(m => m.csr));
@@ -614,9 +624,10 @@
   function buildCoachContext(sessions=sessionCache, options={}) {
     const allowSimulated=!!options.allowSimulated;
     const onlySimulated=!!options.onlySimulated;
-    const ended=sessions.filter(s=>s.endedAt && (onlySimulated?s.simulated:(allowSimulated||!s.simulated)));
+    const ended=sessions.filter(s=>s.endedAt&&!s.rehearsal && (onlySimulated?s.simulated:(allowSimulated||!s.simulated)));
     const stopAll=ended.filter(s=>hasExercise(s,'stop_start'));
-    const usable=stopAll.filter(s=>dataQuality(s).usableForTrend);
+    let usable=stopAll.filter(s=>dataQuality(s).usableForTrend && (onlySimulated||s.clockVersion===2));
+    const condition=usable.at(-1);if(condition)usable=usable.filter(s=>Core.conditionKey(s)===Core.conditionKey(condition));
     const recent=usable.slice(-3), previous=usable.slice(-6,-3), signalWindow=usable.slice(-6);
     const current=summarizeMetrics(recent), baseline=summarizeMetrics(previous);
     const latest=usable.at(-1)||null;
@@ -625,7 +636,7 @@
       schema:`coach-context-v${COACH_CONTEXT_VERSION}`,
       generatedAt:now(),
       source:onlySimulated?'simulated-preview':'real',
-      stage:{week:plan?.currentWeek??0,name:stage().name},
+      stage:{week:0,name:'个人练习'},
       promptMode:settings.promptMode,
       samples:{completed:ended.length,stopStart:stopAll.length,usable:usable.length,excluded:stopAll.length-usable.length,recent:recent.length,previous:previous.length},
       recent:current,
@@ -664,8 +675,8 @@
       if(a.type==='LOWER_STOP_THRESHOLD') {
         headline='近期更值得练“早点发现”';
         summary=`近期可用记录中 Overshoot 约为 ${Number.isFinite(r.overshootRate)?Math.round(r.overshootRate*100)+'%':'—'}，训练引擎因此把重点放在更早的识别与 Stop。`;
-        focus='下一次把注意力前移到 Level 6 左右的呼吸、盆底和动作变化，不要等到非常接近失控才处理。';
-        nextStep='执行 Training Engine 已生成的下一次安排；Coach 本身不修改阈值。';
+        focus='留意个人呼吸、盆底和动作变化，不需要等待高等级再休息。';
+        nextStep='可查看系统建议，确认后才作用于未来训练；Coach 只解释。';
         watch='如果训练明显偏难，优先看控制循环是否完整，而不是是否坚持更久。';
       } else if(a.type==='RECOVERY_FOCUS') {
         headline='下一次把 Recovery 放在第一位';
@@ -681,13 +692,13 @@
         watch='减少提示的目标是建立内部控制，不是把训练变得更难。';
       } else {
         const art=context.change.artPct, control=context.change.controlDelta, over=context.change.overshootDelta;
-        if(p.count && Number.isFinite(art) && art<=-0.15 && (control==null||control>=0) && (over==null||over<=0.05)) {
+        if(p.count>=3 && r.count>=3 && Number.isFinite(art) && art<=-0.15 && (control==null||control>=0) && (over==null||over<=0.05)) {
           headline='近期恢复与控制数据出现一致的积极变化';
           summary=`最近 ${r.count} 次的平均 ART 相比前一窗口约 ${Math.abs(Math.round(art*100))}% 更短，同时控制感没有下降。`;
           focus='继续保持当前训练难度，优先复制“更早觉察 → Stop → 放松 → Resume”的过程。';
-          nextStep='先巩固，不需要因为几次数据变好就主动增加难度。';
+          nextStep='先积累同条件记录，不依据少量变化增加练习量。';
           watch='观察这种变化能否在更多 Session 中保持，而不是追逐单次最好成绩。';
-        } else if(p.count && ((Number.isFinite(art)&&art>=0.2)||(Number.isFinite(control)&&control<=-1))) {
+        } else if(p.count>=3 && r.count>=3 && ((Number.isFinite(art)&&art>=0.2)||(Number.isFinite(control)&&control<=-1))) {
           headline='近期波动增大，先看状态而不是追成绩';
           summary=`近期平均 ART 为 ${fmtCoachNumber(r.meanArtSec,'s',0)}，控制感为 ${fmtCoachNumber(r.control,'/10',1)}。与前一窗口相比，至少一个核心指标出现明显波动。`;
           focus='下一次先观察压力、疲劳、呼吸和盆底紧张是否比平时更高。';
@@ -707,7 +718,7 @@
         focus += ` 最近最常记录到的预警信号是“${top.label}”，可以优先留意它是否在兴奋继续升高前出现。`;
       }
     }
-    const uncertainty=context.samples.usable<3?'可用样本少于 3 次，当前解释主要用于建立观察方向。':context.samples.previous<2?'已经有近期样本，但前一窗口不足，趋势比较仍有限。':'当前比较使用近期窗口与前一窗口；它描述个人训练数据，不代表临床疗效或因果关系。';
+    const uncertainty=context.samples.recent<3||context.samples.previous<3?'前后窗口各需3条同条件、同计时口径的记录；当前只作描述，不判断改善。':'当前比较描述个人记录，不代表临床疗效或因果关系。';
     return sanitizeCoachOutput({version:COACH_OUTPUT_VERSION,mode:'offline-rules',generatedAt:now(),headline,summary,focus,nextStep,watch,evidence,uncertainty,safetyNotice});
   }
   function sanitizeCoachOutput(candidate={}) {
@@ -812,7 +823,7 @@
   }
   function bundledRelayHealthEndpoint() {
     try {
-      if(typeof location!=='undefined' && /^https?:$/.test(location.protocol)) return `${location.origin}/api/health`;
+      if(typeof location!=='undefined' && /^https?:$/.test(location.protocol)) return `${location.origin}/api/coach/ready`;
     } catch(_) {}
     return null;
   }
@@ -822,7 +833,7 @@
     const controller=new AbortController();
     const timer=setTimeout(()=>controller.abort(),5000);
     try {
-      const r=await fetch(endpoint,{headers:{'Accept':'application/json'},signal:controller.signal});
+      const r=await fetch(endpoint,{cache:'no-store',headers:{'Accept':'application/json'},signal:controller.signal});
       if(!r.ok)throw new Error(`HTTP ${r.status}`);
       const data=await r.json();
       if(!data?.ok||data?.service!=='coach-relay')throw new Error('返回内容不是 Stop Action Coach Relay。');
@@ -942,13 +953,10 @@
     return { version: 2, currentWeek: 0, weekStartedAt: startOfDay(new Date()).getTime(), createdAt: now(), schedule: [], scheduleWeekStart: null };
   }
   function sessionsInCurrentPlanWeek() {
-    const start = plan.weekStartedAt;
-    const end = start + 7 * DAY_MS;
-    return sessionCache.filter(s => {
-      const t = s.endedAt || s.startedAt || s.createdAt || 0;
-      return !s.simulated && t >= start && t < end && s.review;
-    });
+    const key=weekStartKey(now());
+    return sessionCache.filter(s=>!s.simulated&&!s.rehearsal&&s.review&&weekStartKey(sessionTimestamp(s))===key);
   }
+
   function weeklyProgress() {
     const sessions = sessionsInCurrentPlanWeek();
     const s = stage();
@@ -976,25 +984,10 @@
     await DB.setMeta('plan', plan);
   }
   async function maybeAdvancePlan() {
-    const age = now() - plan.weekStartedAt;
-    if (age < 7 * DAY_MS || plan.currentWeek >= 8) return;
-    const p = weeklyProgress();
-    const completion = p.stop.target ? p.stop.done / p.stop.target : 0;
-    if (completion >= 0.6) {
-      plan.currentWeek += 1;
-      showToast(`进入第 ${plan.currentWeek} 周`);
-    } else {
-      showToast('本阶段再巩固一周');
-    }
-    plan.weekStartedAt = startOfDay(new Date()).getTime();
-    plan.schedule = [];
-    plan.scheduleWeekStart = null;
-    await ensureSchedule(true);
+    // Phase advancement is explicit in the long-term plan UI.
+    Long.render();
   }
-  function todayTask() {
-    const key = dateKey();
-    return (plan.schedule || []).find(x => x.status !== 'COMPLETED' && x.date === key) || null;
-  }
+  function todayTask() { return Long.todayTask(); }
 
   function programSnapshot(program) {
     return {
@@ -1003,10 +996,10 @@
     };
   }
   function newSession(program, scheduleItemId = null) {
-    const stopThreshold = adaptiveDecision?.stopThreshold ?? DEFAULT_STOP_THRESHOLD;
-    const resumeThreshold = adaptiveDecision?.resumeThreshold ?? DEFAULT_RESUME_THRESHOLD;
+    const stopThreshold = acceptedParameters.stopThreshold;
+    const resumeThreshold = acceptedParameters.resumeThreshold;
     currentSession = {
-      schemaVersion: 4, id: 'S' + now(), createdAt: now(), startedAt: null, endedAt: null,
+      schemaVersion: 5, clockVersion:2, contentVersion:Content.version, guidanceSnapshot:structuredClone(Content.modules), id: 'S-' + crypto.randomUUID(), createdAt: now(), startedAt: null, endedAt: null,
       activeStartedAt: null, activeAccumulatedMs: 0, pausedAt: null, pausedFrom: null,
       phase: 'CHECK_IN', arousal: 2, cycleIndex: 0, cycles: [], currentCycle: null,
       events: [], revisions: [], review: null, checkin: null, overshootCount: 0,
@@ -1018,12 +1011,20 @@
       modules: program.modules.map(moduleLabel)
     };
     persistCurrentSoon();
+    updateReady();
   }
 
   function launchProgram(programId, scheduleItemId = null) {
-    const program = programById(programId);
+    if(currentSession&&currentSession.phase!=='COMPLETED'){showToast('请先完成或结束当前训练');return;}
+    moduleActionReadyAt=0;
+    const task=Long.tasks().find(t=>t.id===scheduleItemId);
+    const program = task?Long.taskProgram(task):programById(programId);
     pendingLaunch = { programId: program.id, scheduleItemId };
     newSession(program, scheduleItemId);
+    if(task){currentSession.longPlanId=task.planId;const instance=Long.meta().longPlans.find(p=>p.id===task.planId);currentSession.guidanceSnapshot=structuredClone(instance?.templateSnapshot.contentSnapshot||Content.modules);currentSession.contentVersion=instance?.templateSnapshot.contentVersion||Content.version;currentSession.planSnapshot={week:task.weekIndex,stageName:Long.stage(task)?.name||stage().name,adaptiveType:adaptiveDecision?.type||'NONE'};}
+    pain=false;$$('[data-pain]').forEach(b=>b.classList.toggle('selected',b.dataset.pain==='false'));$('#painNotice').style.display='none';
+    ['difficulty','signals','awareness'].forEach(id=>$$(`#${id} .chip`).forEach(c=>c.classList.remove('selected')));$('#control').value=6;$('#controlV').textContent='6 / 10';$('#relax').value=5;$('#relaxV').textContent='5 / 10';
+    persistCurrentSoon();
     recordBetaEvent('SESSION_LAUNCHED', { programType: programId === 'standard' ? 'standard' : (programId === 'mindfulness' ? 'mindfulness' : 'custom_or_other') });
     show('checkin');
   }
@@ -1034,6 +1035,7 @@
     closeQuickMarker();
     if (!currentSession) return;
     ensureActiveClock();
+    requestWake();
     const module = currentModule();
     if (!module) { finishSession(); return; }
     const ex = EXERCISES[module.exerciseId];
@@ -1077,47 +1079,39 @@
     const module = currentModule();
     if (!module) return;
     const ex = EXERCISES[module.exerciseId];
+    const guide=currentSession.guidanceSnapshot?.[module.exerciseId]||Content.modules[module.exerciseId];
+    $('#guidedExplanation').textContent=guide.detail+' '+guide.limitation+' 来源：'+guide.sourceIds.map(key=>Content.sources[key].institution).join('、');
     const state = currentSession.guidedState;
     $('#guidedEyebrow').textContent = `${currentSession.moduleIndex + 1} / ${currentSession.programSnapshot.modules.length} · ${currentSession.programSnapshot.name}`;
     $('#guidedIcon').textContent = ex.icon;
     $('#guidedTitle').textContent = ex.name;
-    $('#guidedStep').textContent = ex.instruction;
+    $('#guidedStep').textContent = guide.short;
     if (state?.type === 'interval') {
       const contract = state.intervalPhase === 'contract';
-      $('#guidedCount').textContent = fmt((state.phaseRemainingSec || 0) * 1000);
+      $('#guidedCount').textContent = fmt(Math.ceil(state.phaseRemainingSec || 0) * 1000);
       $('#guidedStep').textContent = contract ? '轻柔收缩，保持正常呼吸。不要同时夹紧腹部、臀部和大腿。' : '完全放松，观察盆底是否真正释放，不需要急着进入下一次收缩。';
       $('#guidedMeta').textContent = `第 ${state.round} / ${state.rounds} 轮 · ${contract ? '轻柔收缩 3 秒' : '完整放松 6 秒'}`;
     } else {
-      $('#guidedCount').textContent = fmt((state?.remainingSec || 0) * 1000);
+      $('#guidedCount').textContent = fmt(Math.ceil(state?.remainingSec || 0) * 1000);
       $('#guidedMeta').textContent = moduleLabel(module);
     }
     renderModuleDots();
   }
-  function runGuidedTimer() {
-    clearInterval(guidedTimer);
-    guidedTimer = setInterval(() => {
-      if (!currentSession || currentSession.phase !== 'MODULE_ACTIVE' || currentSession.pausedAt) return;
-      const state = currentSession.guidedState;
-      if (!state) return;
-      if (state.type === 'timed') {
-        state.remainingSec = Math.max(0, state.remainingSec - 1);
-        if (state.remainingSec <= 0) { completeCurrentModule('COMPLETED'); return; }
-      } else {
-        state.phaseRemainingSec = Math.max(0, state.phaseRemainingSec - 1);
-        if (state.phaseRemainingSec <= 0) {
-          if (state.intervalPhase === 'contract') {
-            state.intervalPhase = 'release'; state.phaseRemainingSec = 6; vibrate(18);
-          } else if (state.round < state.rounds) {
-            state.round += 1; state.intervalPhase = 'contract'; state.phaseRemainingSec = 3; vibrate([18, 30, 18]);
-          } else {
-            completeCurrentModule('COMPLETED'); return;
-          }
-        }
-      }
-      if ((state.remainingSec ?? state.phaseRemainingSec) % 5 === 0) persistCurrentSoon();
-      renderGuided();
-    }, 1000);
+  function updateGuidedClock() {
+    if(!currentSession?.guidedState||currentSession.pausedAt)return;
+    const elapsed=activeElapsed(),delta=Math.max(0,elapsed-guideLastElapsed);guideLastElapsed=elapsed;
+    const result=Core.guidedStep(currentSession.guidedState,delta);currentSession.guidedState=result.state;
+    return result.done;
   }
+  function runGuidedTimer() {
+    clearInterval(guidedTimer);guideLastElapsed=activeElapsed();requestWake();
+    guidedTimer=setInterval(()=>{
+      if(!currentSession||currentSession.phase!=='MODULE_ACTIVE'||currentSession.pausedAt)return;
+      if(updateGuidedClock()){completeCurrentModule('COMPLETED');return;}
+      renderGuided();
+    },250);
+  }
+
   function completeCurrentModule(status = 'COMPLETED') {
     clearInterval(guidedTimer);
     const module = currentModule();
@@ -1159,7 +1153,7 @@
     sessionTimer = setInterval(() => {
       if (!currentSession) return;
       $('#activeTime').textContent = fmt(activeElapsed());
-      if (currentSession.currentCycle && currentSession.phase === 'RECOVERY') $('#recoveryTime').textContent = fmt(now() - currentSession.currentCycle.stopStartedAt);
+      if (currentSession.currentCycle && currentSession.phase === 'RECOVERY') $('#recoveryTime').textContent = fmt(activeElapsed() - (currentSession.currentCycle.stopActiveElapsedMs ?? activeElapsed()));
       else $('#recoveryTime').textContent = '';
     }, 250);
   }
@@ -1188,6 +1182,9 @@
     if (!currentSession) return;
     const phase = currentSession.phase;
     const mode = settings.promptMode || 'full';
+    $('#explicitStop').disabled=currentSession.pausedAt||!['BUILD','CONTROL_ZONE','STOP_SUGGESTED'].includes(phase);
+    $('#explicitResume').disabled=currentSession.pausedAt||phase!=='RESUME_AVAILABLE';
+    $('#explicitMarker').disabled=currentSession.pausedAt||phase!=='RECOVERY';
     const shell = $('#sessionShell');
     shell.className = 'session-shell';
     $('#arousal').textContent = currentSession.arousal;
@@ -1210,11 +1207,11 @@
     if (phase === 'COMPLETE_READY') { label = '本模块目标已完成'; hint = `已完成 ${completed} 个控制循环`; g = '建议进入下一模块；也可以再进行一轮'; }
     $('#phaseLabel').textContent = label;
     $('#sessionHint').textContent = hint;
-    $('#gestureHint').textContent = g;
+    $('#gestureHint').textContent = settings.gestures?g:'使用下方按钮；等级是个人感受，随时可以暂停。';
     renderCycles();
   }
   function changeArousal(delta) {
-    if (!currentSession || !['BUILD','CONTROL_ZONE','STOP_SUGGESTED','RECOVERY','RESUME_AVAILABLE','COMPLETE_READY'].includes(currentSession.phase)) return;
+    if (!currentSession || currentSession.pausedAt || !['BUILD','CONTROL_ZONE','STOP_SUGGESTED','RECOVERY','RESUME_AVAILABLE','COMPLETE_READY'].includes(currentSession.phase)) return;
     const previous = currentSession.arousal;
     let next = clamp(previous + delta, 0, 9);
     if (next === 9 && previous === 8 && !confirm('确认记录为 9？这会结束本次训练并进入复盘。')) return;
@@ -1253,7 +1250,7 @@
     } else if (currentSession.phase === 'RECOVERY' && next <= resumeThreshold) {
       if (currentSession.currentCycle && !currentSession.currentCycle.recoveryReachedAt) {
         currentSession.currentCycle.recoveryReachedAt = now();
-        currentSession.currentCycle.artMs = currentSession.currentCycle.recoveryReachedAt - currentSession.currentCycle.stopStartedAt;
+        currentSession.currentCycle.artMs = activeElapsed() - currentSession.currentCycle.stopActiveElapsedMs;
         event('RECOVERY_TARGET_REACHED', { artMs: currentSession.currentCycle.artMs });
       }
       setPhase('RESUME_AVAILABLE');
@@ -1263,10 +1260,11 @@
   }
   function confirmStop(manual = false) {
     const phase = currentSession?.phase;
-    const autonomousAllowed = settings.promptMode === 'autonomous' && ['BUILD','CONTROL_ZONE'].includes(phase);
+    const autonomousAllowed = manual && ['BUILD','CONTROL_ZONE'].includes(phase);
+    if(currentSession?.pausedAt)return;
     if (phase !== 'STOP_SUGGESTED' && !autonomousAllowed) return;
     currentSession.currentCycle = {
-      id: 'C' + (currentSession.cycles.length + 1), stopStartedAt: now(), stopLevel: currentSession.arousal,
+      id: 'C' + (currentSession.cycles.length + 1), stopStartedAt: now(), stopActiveElapsedMs:activeElapsed(), stopLevel: currentSession.arousal,
       peakLevel: currentSession.arousal, recoveryReachedAt: null, artMs: null, signals: [], manual
     };
     recordBetaEvent('STOP_CONFIRMED', { manual, phase });
@@ -1274,7 +1272,7 @@
     setPhase('RECOVERY');
   }
   function resumeCycle() {
-    if (currentSession?.phase !== 'RESUME_AVAILABLE') return;
+    if (currentSession?.phase !== 'RESUME_AVAILABLE'||currentSession.pausedAt) return;
     const c = currentSession.currentCycle;
     c.resumedAt = now(); c.resumeLevel = currentSession.arousal; c.successful = true;
     currentSession.cycles.push(c);
@@ -1289,14 +1287,16 @@
     vibrate(24);
   }
   function openQuickMarker() {
-    if (currentSession?.phase !== 'RECOVERY') return;
+    if (currentSession?.phase !== 'RECOVERY'||currentSession.pausedAt) return;
     const sheet = $('#quickMarkerSheet');
     recordBetaEvent('QUICK_MARKER_OPENED', { phase: currentSession.phase });
     sheet.classList.add('show'); sheet.setAttribute('aria-hidden','false'); vibrate(20);
+    sheet.setAttribute('role','dialog');sheet.setAttribute('aria-modal','true');sheet.setAttribute('aria-label','记录身体信号');sheet.querySelector('button')?.focus?.();
   }
   function closeQuickMarker() {
     const sheet = $('#quickMarkerSheet');
     sheet.classList.remove('show'); sheet.setAttribute('aria-hidden','true');
+    if(document.activeElement&&sheet.contains?.(document.activeElement))$('#explicitMarker').focus?.();
   }
   function recordQuickSignal(signal, label) {
     if (!currentSession?.currentCycle) return;
@@ -1319,6 +1319,7 @@
       $('#cancelFinish').textContent = '继续训练';
     }
     sheet.classList.add('show');
+    sheet.setAttribute('role','dialog');sheet.setAttribute('aria-modal','true');sheet.setAttribute('aria-label','结束训练');sheet.querySelector('button')?.focus?.();
   }
   function finishPrimaryAction() {
     const mode = $('#finishSheet').dataset.mode;
@@ -1331,9 +1332,13 @@
   }
 
   function pauseSession() {
-    if (!currentSession) return;
+    if (!currentSession||currentSession.pausedAt||['CHECK_IN','REVIEW','COMPLETED'].includes(currentSession.phase)) return;
+    updateGuidedClock();
+    clearTimeout(longPressTimer);touchStart=null;closeQuickMarker();
+    $('#finishSheet').classList.remove('show');
     clearInterval(guidedTimer);
     stopActiveClock();
+    releaseWake();
     currentSession.pausedAt = now();
     currentSession.pausedFrom = currentSession.phase;
     recordBetaEvent('SESSION_PAUSED', { from: currentSession.pausedFrom });
@@ -1346,15 +1351,17 @@
     if (!currentSession) return;
     currentSession.pausedAt = null;
     currentSession.activeStartedAt = now();
+    requestWake();
     recordBetaEvent('SESSION_RESUMED', { to: currentSession.phase });
     event('SESSION_RESUMED', { to: currentSession.phase });
-    if (currentSession.phase === 'MODULE_ACTIVE') { show('moduleGuide'); renderGuided(); runGuidedTimer(); }
+    if(currentSession.phase==='CHECK_IN'){currentSession.activeStartedAt=null;show('checkin');return;} if (currentSession.phase === 'MODULE_ACTIVE') { show('moduleGuide'); renderGuided(); runGuidedTimer(); }
     else { show('session'); renderSession(); runSessionTimer(); }
   }
   function finishSession() {
-    if (!currentSession) return;
-    clearInterval(guidedTimer); clearInterval(sessionTimer); closeQuickMarker();
+    if (!currentSession||currentSession.phase==='COMPLETED'||currentSession.phase==='REVIEW') return;
+    updateGuidedClock();clearInterval(guidedTimer); clearInterval(sessionTimer); closeQuickMarker();
     stopActiveClock();
+    releaseWake();
     currentSession.endedAt = now();
     recordBetaEvent('SESSION_FINISHED', { phase: currentSession.phase, cycles: currentSession.cycles.length });
     event('SESSION_ENDED');
@@ -1386,31 +1393,25 @@
     $$('#signals .chip').forEach(c => c.classList.toggle('selected', c.textContent.trim() === target));
   }
   async function saveReview() {
-    const hasStop = hasExercise(currentSession, 'stop_start');
-    currentSession.review = {
-      control: +$('#control').value,
-      relax: hasStop ? +$('#relax').value : null,
-      difficulty: reviewSelection('difficulty'),
-      signal: reviewSelection('signals'),
-      awareness: hasStop ? reviewSelection('awareness') : null
-    };
-    event('REVIEW_COMPLETED', currentSession.review);
-    currentSession.phase = 'COMPLETED';
-    await DB.putSession(currentSession);
-    sessionCache.push(structuredClone(currentSession));
-    sessionCache.sort((a,b)=>(a.endedAt||0)-(b.endedAt||0));
-    if (currentSession.scheduleItemId) {
-      const item = (plan.schedule || []).find(x => x.id === currentSession.scheduleItemId);
-      if (item) { item.status = 'COMPLETED'; item.completedSessionId = currentSession.id; await DB.setMeta('plan', plan); }
-    }
-    await DB.clearCurrentSession();
-    adaptiveDecision = adaptiveEngine(sessionCache);
-    await DB.setMeta('adaptiveDecision', adaptiveDecision);
-    await appendAdaptiveHistory(adaptiveDecision, { source: 'session-review', afterSessionId: currentSession.id });
-    await appendCoachHistory({ source: 'session-review', afterSessionId: currentSession.id });
-    await maybeAdvancePlan();
-    renderSummary(); show('summary');
+    if(!currentSession||saveInFlight||currentSession.phase==='COMPLETED')return;
+    saveInFlight=true;$('#saveReview').disabled=true;
+    const before=structuredClone(Long.meta());
+    try{
+      const hasStop=hasExercise(currentSession,'stop_start');
+      currentSession.review={control:+$('#control').value,relax:hasStop?+$('#relax').value:null,difficulty:reviewSelection('difficulty'),signal:reviewSelection('signals'),awareness:hasStop?reviewSelection('awareness'):null};
+      event('REVIEW_COMPLETED',currentSession.review);await persistCurrentSoon();
+      const completed=structuredClone(currentSession);completed.phase='COMPLETED';
+      if(completed.scheduleItemId)Long.markCompleted(completed.scheduleItemId,completed.id);
+      await DB.completeSession(completed,Long.meta());
+      currentSession=completed;sessionCache=sessionCache.filter(s=>s.id!==completed.id);sessionCache.push(completed);sessionCache.sort((a,b)=>sessionTimestamp(a)-sessionTimestamp(b));
+      $('#saveStatus').textContent='训练已保存';
+      adaptiveDecision=adaptiveEngine(sessionCache);
+      try{await DB.setMeta('adaptiveDecision',adaptiveDecision);await appendAdaptiveHistory(adaptiveDecision,{source:'session-review',afterSessionId:completed.id});await appendCoachHistory({source:'session-review',afterSessionId:completed.id});}catch{showToast('训练已保存，附加复盘暂未写入');}
+      renderSummary();show('summary');Long.render();updateReady();
+    }catch(error){Long.hydrate(before);$('#saveStatus').textContent='保存失败 · 请重试或导出';showToast('未完成保存，请重试；当前记录仍在。');}
+    finally{saveInFlight=false;$('#saveReview').disabled=false;}
   }
+
   function renderSummary() {
     const m = computeMetrics(currentSession);
     $('#summaryProgram').textContent = currentSession.programSnapshot?.name || '训练';
@@ -1421,6 +1422,8 @@
     drawChart(currentSession);
     $('#summaryCoachCard').innerHTML=renderCoachReport(liveCoach(),true);
     if ($('#betaFeedbackCard')) $('#betaFeedbackCard').style.display = settings.betaTelemetryEnabled ? 'block' : 'none';
+    const target=$('#associateTask');
+    if(target){target.innerHTML='<option value="">保持自由训练记录</option>'+Long.tasks().filter(t=>t.status==='PLANNED'&&t.instance.status==='ACTIVE').map(t=>`<option value="${escapeHtml(t.id)}">${t.date} · ${escapeHtml(t.programSnapshot.name)}</option>`).join('');$('#associateCard').hidden=!!currentSession.scheduleItemId;}
   }
   function drawChart(s) {
     const svg = $('#chart');
@@ -1446,8 +1449,8 @@
   }
   function refreshDashboard() {
     const s=stage(), p=weeklyProgress(), task=todayTask();
-    const program = task ? programById(task.programId) : programById('standard');
-    $('#dashboardStage').textContent = plan.currentWeek===0 ? `基线阶段 · ${s.name}` : `第 ${plan.currentWeek} 周 · ${s.name}`;
+    const program = task ? Long.taskProgram(task) : programById('standard');
+    $('#dashboardStage').textContent = `${Long.active()?'主计划':'自由训练'} · ${s.name}`;
     $('#todayTitle').textContent = task ? program.name : `${program.name} · 灵活训练`;
     $('#todayFocus').textContent = `今天重点：${s.focus}`;
     const minutes = program.modules.reduce((sum,m)=>sum+(m.durationSec||0)/60+(m.exerciseId==='stop_start'?(m.cycles||s.cycles)*3:0)+(m.exerciseId==='pelvic_coordination'?(m.rounds||5)*0.15:0),0);
@@ -1470,33 +1473,38 @@
   }
   function renderAdaptiveCard() {
     const d=adaptiveDecision||adaptiveEngine(sessionCache);
-    const applied=d.applied?'已应用于下一次动停训练':'仅作为训练建议';
+    const applied=`当前已确认阈值 ${acceptedParameters.stopThreshold} / ${acceptedParameters.resumeThreshold}；确认后才用于未来训练`;
     let action='';
     if (d.type==='REDUCE_PROMPTS_SUGGESTED' && settings.promptMode==='full') action='<button id="adaptiveReducePrompt" class="secondary" style="margin-top:12px">由我确认：减少提示</button>';
+    if(d.type==='LOWER_STOP_THRESHOLD'&&(d.stopThreshold!==acceptedParameters.stopThreshold||d.resumeThreshold!==acceptedParameters.resumeThreshold))action+='<button id="confirmParameters" class="secondary">确认参数建议</button>';
+    const last=parameterHistory.filter(row=>row.kind==='APPLY'&&!row.reversed).at(-1);
+    if(last)action+='<button id="revertParameters" class="ghost">撤回最近参数调整</button>';
     $('#adaptiveCard').innerHTML=`<div class="eyebrow">${escapeHtml(d.type.replaceAll('_',' '))}</div><strong>${escapeHtml(d.title)}</strong><div class="muted">${applied}</div><div class="reason">${escapeHtml(d.reason)}</div>${action}`;
     document.getElementById('adaptiveReducePrompt')?.addEventListener('click', async()=>{ settings.promptMode='threshold'; await DB.setMeta('settings',settings); renderAdaptiveCard(); showToast('已切换为“仅阈值”提示'); });
+    document.getElementById('confirmParameters')?.addEventListener('click',async()=>{
+      if(!confirm(`只影响未来训练：${acceptedParameters.stopThreshold}/${acceptedParameters.resumeThreshold} → ${d.stopThreshold}/${d.resumeThreshold}\n${d.reason}`))return;
+      const next={stopThreshold:d.stopThreshold,resumeThreshold:d.resumeThreshold},history=[...parameterHistory,{id:crypto.randomUUID(),kind:'APPLY',oldValue:{...acceptedParameters},newValue:next,reason:d.reason,at:now()}];
+      try{await DB.importData([],{acceptedParameters:next,parameterHistory:history});acceptedParameters=next;parameterHistory=history;renderAdaptiveCard();}catch{showToast('参数未保存，请重试');}
+    });
+    document.getElementById('revertParameters')?.addEventListener('click',async()=>{
+      const history=structuredClone(parameterHistory),record=history.find(row=>row.id===last.id);record.reversed=true;
+      history.push({kind:'REVERT',targetId:record.id,oldValue:{...acceptedParameters},newValue:record.oldValue,at:now(),reason:'用户撤回，仅影响未来训练'});
+      try{await DB.importData([],{acceptedParameters:record.oldValue,parameterHistory:history});acceptedParameters=record.oldValue;parameterHistory=history;renderAdaptiveCard();}catch{showToast('撤回未保存，请重试');}
+    });
   }
 
   function renderPlan() {
     const s=stage();
-    $('#planStage').textContent=plan.currentWeek===0?`基线阶段 · ${s.name}`:`第 ${plan.currentWeek} 周 · ${s.name}`;
+    $('#planStage').textContent=`${Long.active()?'主计划':'自由安排'} · ${s.name}`;
     $('#stageTitle').textContent=`这一阶段：${s.name}`; $('#stageDescription').textContent=s.focus;
-    $('#planEngineNote').innerHTML='<span>◌</span><span>训练内容已经拆成独立 Exercise。日历只负责“哪天做哪个方案”；你可以拖动 ≡ 到其他日期，也可以把自定义方案安排进本周。</span>';
-    renderScheduleCalendar(); renderPrograms(); renderBuilder(); bindScheduleDrag();
+    $('#planEngineNote').innerHTML='<span>◌</span><span>训练内容已经拆成独立 Exercise。日历只负责“哪天做哪个方案”；你可以拖动 ≡ 到其他日期，也可以把自定义方案安排到任意日期。</span>';
+    renderScheduleCalendar(); Long.render(); renderPrograms(); renderBuilder();
   }
-  function renderScheduleCalendar() {
-    const start=new Date(plan.weekStartedAt), today=dateKey();
-    let html='';
-    for(let i=0;i<7;i++){
-      const d=addDays(start,i), key=dateKey(d), tasks=(plan.schedule||[]).filter(x=>x.date===key);
-      const chips=tasks.map(t=>{const pr=programById(t.programId);const done=t.status==='COMPLETED';return `<div class="schedule-chip ${done?'done':''}" data-task-id="${escapeHtml(t.id)}" ${done?'':`data-start-schedule="${escapeHtml(t.id)}"`}><div>${escapeHtml(pr.name)}</div>${done?'<div class="small">✓ 已完成</div>':`<span class="drag-handle" data-drag-id="${escapeHtml(t.id)}" title="拖动调整日期">≡</span>`}</div>`;}).join('');
-      html+=`<div class="calendar-day ${key===today?'today':''}" data-date="${key}"><div class="day-label">${key===today?'今天':weekdayLabel(d)}<br>${key.slice(5)}</div>${chips}</div>`;
-    }
-    $('#scheduleCalendar').innerHTML=html;
-  }
+  function renderScheduleCalendar() { Long.renderCalendar(); }
+
   function programCard(program) {
     const modules=program.modules.map(m=>`<span class="pill">${escapeHtml(moduleLabel(m))}</span>`).join('');
-    return `<div class="program-card"><div class="program-head"><div><strong>${escapeHtml(program.name)}</strong><div class="small" style="margin-top:4px">${escapeHtml(program.description||'自定义组合')}</div></div>${program.builtin?'<span class="schedule-badge">内置</span>':'<span class="schedule-badge">自定义</span>'}</div><div class="modules">${modules}</div><div class="program-actions"><button class="secondary" data-start-program="${escapeHtml(program.id)}">立即开始</button><button class="ghost" data-schedule-program="${escapeHtml(program.id)}">安排本周</button>${program.builtin?'':`<button class="ghost" data-delete-program="${escapeHtml(program.id)}">删除</button>`}</div></div>`;
+    return `<div class="program-card"><div class="program-head"><div><strong>${escapeHtml(program.name)}</strong><div class="small" style="margin-top:4px">${escapeHtml(program.description||'自定义组合')}</div></div>${program.builtin?'<span class="schedule-badge">内置</span>':'<span class="schedule-badge">自定义</span>'}</div><div class="modules">${modules}</div><div class="program-actions"><button class="secondary" data-start-program="${escapeHtml(program.id)}">立即开始</button><button class="ghost" data-schedule-program="${escapeHtml(program.id)}">安排日期</button>${program.builtin?'':`<button class="ghost" data-delete-program="${escapeHtml(program.id)}">删除</button>`}</div></div>`;
   }
   function renderPrograms() {
     $('#programList').innerHTML=allPrograms().map(programCard).join('');
@@ -1528,16 +1536,11 @@
     renderPrograms(); showToast('已保存自定义方案');
   }
   async function scheduleProgram(programId) {
-    const start=new Date(plan.weekStartedAt), today=startOfDay(new Date());
-    let chosen=null;
-    for(let i=0;i<7;i++){
-      const d=addDays(start,i); if(d<today) continue;
-      const key=dateKey(d); if(!(plan.schedule||[]).some(x=>x.date===key && x.status!=='COMPLETED')){chosen=key;break;}
-    }
-    if(!chosen) chosen=dateKey();
-    plan.schedule.push({id:'U'+now(),date:chosen,programId,status:'PLANNED',createdAt:now()});
-    await DB.setMeta('plan',plan); renderPlan(); refreshDashboard(); showToast(`已安排到 ${chosen.slice(5)}`);
+    const date=prompt('安排日期（YYYY-MM-DD，可跨月）',dateKey());
+    if(!date)return;
+    try{await Long.addTask(programById(programId),date);showToast('已加入日历');}catch(error){showToast(error.message);}
   }
+
   async function deleteProgram(id) {
     customPrograms=customPrograms.filter(p=>p.id!==id);
     plan.schedule=(plan.schedule||[]).filter(x=>x.programId!==id || x.status==='COMPLETED');
@@ -1570,7 +1573,7 @@
     const latest=weeks.at(-1)||{};
     body.innerHTML=`
       <div class="card"><div class="section-head"><h2>趋势数据质量</h2><span class="muted">${usableCount}/${stopVisible.length||0} 可用</span></div><p class="small">低质量 Session 不进入周趋势和真实 Adaptive Decision。${excludedCount?`当前排除 ${excludedCount} 条。`: '当前没有因质量问题被排除的动停记录。'}</p></div>
-      <div class="card"><div class="trend-meta"><div><div class="eyebrow">最近 8 周</div><h2>恢复能力 · ART</h2></div><div class="metric-big">${Number.isFinite(latest.art)?Math.round(latest.art)+'s':'—'}</div></div><svg id="trendArtChart" viewBox="0 0 480 180" preserveAspectRatio="none"></svg><div class="small">按每周平均值展示。ART 越短只代表恢复更快，不单独等同于整体训练效果。</div></div>
+      <div class="card"><div class="trend-meta"><div><div class="eyebrow">所选时间段</div><h2>恢复记录 · ART</h2></div><div class="metric-big">${Number.isFinite(latest.art)?Math.round(latest.art)+'s':'—'}</div></div><svg id="trendArtChart" viewBox="0 0 480 180" preserveAspectRatio="none"></svg><div class="small">按每周平均值展示。ART是应用内主观恢复记录，不追求更短，也不单独说明训练效果。</div></div>
       <div class="card"><div class="trend-meta"><div><div class="eyebrow">实际 Stop</div><h2>平均 Stop Level</h2></div><div class="metric-big">${Number.isFinite(latest.stop)?latest.stop.toFixed(1):'—'}</div></div><svg id="trendStopChart" viewBox="0 0 480 180" preserveAspectRatio="none"></svg><div class="small">记录实际停止时的主观等级；自主模式尤其适合观察这个趋势。</div></div>
       <div class="card"><div class="trend-meta"><div><div class="eyebrow">稳定性</div><h2>Level 8 · Overshoot</h2></div><div class="metric-big">${Number.isFinite(latest.overshoot)?Math.round(latest.overshoot)+'%':'—'}</div></div><svg id="trendOvershootChart" viewBox="0 0 480 180" preserveAspectRatio="none"></svg><div class="small">按进入 STOP 的循环计算，只和自己的近期状态比较。</div></div>
       <div class="card"><div class="trend-meta"><div><div class="eyebrow">主观维度</div><h2>控制感</h2></div><div class="metric-big">${Number.isFinite(latest.control)?latest.control.toFixed(1)+'/10':'—'}</div></div><svg id="trendControlChart" viewBox="0 0 480 180" preserveAspectRatio="none"></svg></div>
@@ -1593,8 +1596,8 @@
     const body=$('#comparePanelBody');
     const groups=new Map();
     analysisSessions().filter(s=>s.endedAt&&hasExercise(s,'stop_start')&&dataQuality(s).usableForTrend).forEach(s=>{
-      const key=s.programSnapshot?.id||s.programSnapshot?.name||'unknown';
-      if(!groups.has(key))groups.set(key,{name:s.programSnapshot?.name||'训练',sessions:[]});
+      const key=Core.conditionKey(s);
+      if(!groups.has(key))groups.set(key,{name:(s.programSnapshot?.name||'训练')+' · '+(s.planSnapshot?.stageName||'未标阶段')+' · '+(PROMPT_MODES[s.promptModeSnapshot]||'默认提示')+' · 时钟v'+(s.clockVersion||1),sessions:[]});
       groups.get(key).sessions.push(s);
     });
     const rows=[...groups.values()].map(g=>{
@@ -1645,17 +1648,21 @@
   async function deleteHistoricalSession(id) {
     const s=sessionCache.find(x=>x.id===id); if(!s)return;
     if(!confirm('删除这次训练记录？相关趋势会重新计算，此操作无法撤销。'))return;
-    await DB.deleteSession(id); sessionCache=sessionCache.filter(x=>x.id!==id);
+    await DB.deleteSession(id); sessionCache=sessionCache.filter(x=>x.id!==id); await Long.removeSession(id);
     (plan.schedule||[]).forEach(item=>{if(item.completedSessionId===id){item.status='PLANNED';delete item.completedSessionId;}});
     await DB.setMeta('plan',plan);
     adaptiveDecision=adaptiveEngine(sessionCache); await DB.setMeta('adaptiveDecision',adaptiveDecision);
     renderInsights(); refreshDashboard(); renderSettings(); navTo('insights'); showToast('训练记录已删除');
   }
   async function exportJsonBackup() {
-    const backup={format:'ec-training-backup',version:2,appVersion:APP_VERSION,exportedAt:new Date().toISOString(),sessions:sessionCache,meta:{settings,plan,customPrograms,adaptiveDecision,adaptiveHistory,simulationAdaptiveHistory,coachHistory,coachChatMessages,acceptanceResults,betaTelemetry,betaInstallId}};
-    downloadBlob(JSON.stringify(backup,null,2),`training-backup-${dateKey()}.json`,'application/json;charset=utf-8');
-    showToast('JSON 备份已生成');
+    $('#backupPassword').value='';$('#backupPasswordAgain').value='';$('#backupMode').value='encrypted';$('#backupError').textContent='';$('#backupDialog').showModal();
   }
+  async function backupPayload(){
+    const meta={};for(const key of Backup.metaKeys)meta[key]=await DB.getMeta(key,null);
+    Object.assign(meta,{settings,plan,customPrograms,adaptiveDecision,adaptiveHistory,simulationAdaptiveHistory,coachHistory,coachChatMessages,acceptanceResults,betaTelemetry,betaInstallId,...Long.meta(),acceptedParameters,parameterHistory,currentSession:currentSession&&currentSession.phase!=='COMPLETED'?Core.checkpoint(currentSession):null});
+    return {format:'ec-training-backup',version:3,appVersion:APP_VERSION,exportedAt:new Date().toISOString(),sessions:sessionCache,meta};
+  }
+
   function exportCsvSummary() {
     const headers=['date','sessionId','program','week','activeMinutes','cycles','meanARTSeconds','meanStopLevel','overshootRatePercent','control','difficulty','awareness','stress','fatigue','pelvicTension','promptMode','dataQuality','qualityScore','revised','simulated'];
     const rows=sessionCache.filter(s=>s.endedAt).map(s=>{const m=computeMetrics(s);return [new Date(sessionTimestamp(s)).toISOString(),s.id,s.programSnapshot?.name||'',s.planSnapshot?.week??'',Number.isFinite(m.activeMinutes)?m.activeMinutes.toFixed(1):'',m.cycles,Number.isFinite(m.meanART)?(m.meanART/1000).toFixed(1):'',Number.isFinite(m.meanStopLevel)?m.meanStopLevel.toFixed(2):'',Number.isFinite(m.overshootRate)?(m.overshootRate*100).toFixed(1):'',m.control??'',m.difficulty??'',m.awareness??'',m.stress??'',m.fatigue??'',m.pelvicTension??'',s.promptModeSnapshot||'',dataQuality(s).label,dataQuality(s).score,dataQuality(s).revised?'yes':'no',s.simulated?'yes':'no'];});
@@ -1663,26 +1670,16 @@
     downloadBlob(csv,`training-summary-${dateKey()}.csv`,'text/csv;charset=utf-8'); showToast('CSV 摘要已生成');
   }
   async function restoreJsonBackup(file) {
-    let data; try{data=JSON.parse(await file.text());}catch(_){showToast('无法读取这个 JSON 文件');return;}
-    if(data?.format!=='ec-training-backup'||!Array.isArray(data.sessions)){showToast('不是有效的训练备份');return;}
-    if(!confirm(`将用备份中的 ${data.sessions.length} 次训练替换当前训练数据。继续吗？`))return;
-    await DB.clearTrainingData();
-    for(const session of data.sessions){if(session?.id)await DB.putSession(session);}
-    settings={haptics:true,promptMode:'full',...(data.meta?.settings||{})};
-    customPrograms=Array.isArray(data.meta?.customPrograms)?data.meta.customPrograms:[];
-    plan=data.meta?.plan||defaultPlan();
-    adaptiveHistory=Array.isArray(data.meta?.adaptiveHistory)?data.meta.adaptiveHistory:[];
-    simulationAdaptiveHistory=Array.isArray(data.meta?.simulationAdaptiveHistory)?data.meta.simulationAdaptiveHistory:[];
-    coachHistory=Array.isArray(data.meta?.coachHistory)?data.meta.coachHistory:[];
-    coachChatMessages=Array.isArray(data.meta?.coachChatMessages)?data.meta.coachChatMessages:[];
-    acceptanceResults=data.meta?.acceptanceResults||{};
-    betaTelemetry=Array.isArray(data.meta?.betaTelemetry)?data.meta.betaTelemetry:[];
-    betaInstallId=data.meta?.betaInstallId||betaInstallId;
-    sessionCache=await DB.getAllSessions();
-    adaptiveDecision=data.meta?.adaptiveDecision||adaptiveEngine(sessionCache);
-    await DB.setMeta('settings',settings); await DB.setMeta('customPrograms',customPrograms); await DB.setMeta('plan',plan); await DB.setMeta('adaptiveDecision',adaptiveDecision); await DB.setMeta('adaptiveHistory',adaptiveHistory); await DB.setMeta('simulationAdaptiveHistory',simulationAdaptiveHistory); await DB.setMeta('coachHistory',coachHistory); await DB.setMeta('coachChatMessages',coachChatMessages); await DB.setMeta('acceptanceResults',acceptanceResults); await DB.setMeta('betaTelemetry',betaTelemetry); await DB.setMeta('betaInstallId',betaInstallId);
-    await ensureSchedule(); await ensureAdaptiveHistory(); resetBuilderState(); refreshDashboard(); renderPlan(); renderSettings(); renderInsights(); navTo('insights'); showToast('备份已恢复');
+    if(currentSession&&currentSession.phase!=='COMPLETED'){showToast('请先结束当前训练再恢复备份');return;}
+    try{
+      if(file.size>Backup.MAX_BYTES)throw new Error('备份超过50MB上限');
+      pendingRestore=JSON.parse(await file.text());restorePreview=null;
+      const encrypted=pendingRestore.format==='stop-action-encrypted-backup';
+      if(!encrypted)pendingRestore=Backup.validate(pendingRestore);
+      $('#restorePassword').value='';$('#restorePasswordLabel').hidden=!encrypted;$('#restoreError').textContent='';$('#restoreSubmit').textContent='校验并预览';$('#restoreSummary').textContent=encrypted?'已选择加密文件，输入密码后校验。':'已选择明文文件，下一步查看导入预览。';$('#restoreDialog').showModal();
+    }catch(error){showToast(error.message);}
   }
+
   function renderRevisionLogHtml(s) {
     const revisions=Array.isArray(s.revisions)?s.revisions:[];
     if(!revisions.length) return '<div class="card"><h2>修订日志</h2><div class="muted">没有手动修订。原始事件流保持不变。</div></div>';
@@ -1779,7 +1776,7 @@
   const ACCEPTANCE_ITEMS=[
     ['gesture','竖屏状态下，上下滑能稳定改变等级，连续操作不会误触页面滚动'],
     ['stop','达到阈值后，单击 Stop 的反馈清晰且不会误触成双击'],
-    ['resume','Recovery 达标后，双击 Resume 能稳定识别'],
+    ['resume','主观舒适且可控后，双击 Resume 能稳定识别'],
     ['quick','Recovery 左滑能打开 Quick Marker，关闭后仍停留在原训练状态'],
     ['haptic','关键节点震动在当前手机上能清楚区分，且不过度打扰'],
     ['calendar','日历拖拽在触屏上不会与页面滚动冲突'],
@@ -1796,7 +1793,7 @@
   function renderSettings() {
     $('#hapticLabel').textContent=settings.haptics?'开启':'关闭';
     const realCount=sessionCache.filter(s=>!s.simulated).length; $('#sessionCount').textContent=`${realCount} 次真实训练`;
-    $('#dbStatus').textContent='IndexedDB · Store v2 / Session v4 · App v1.0';
+    $('#dbStatus').textContent='IndexedDB · Session v5 · App v2.0'; renderPreferences();
     $('#promptModeLabel').textContent=PROMPT_MODES[settings.promptMode]||PROMPT_MODES.full;
     $('#externalCoachStatus').textContent=externalCoachConfigured()?'已授权':'关闭';
     $('#externalCoachEndpoint').value=settings.externalCoachEndpoint||'';
@@ -1823,11 +1820,8 @@
     if(settings.developerMode){renderCapabilities();renderAcceptanceChecklist();}
   }
 
-  async function deferToTomorrow() {
-    const task=todayTask(); if(!task){showToast('今天没有待完成的计划');return;}
-    task.date=dateKey(addDays(new Date(),1)); task.movedAt=now(); await DB.setMeta('plan',plan); refreshDashboard(); renderPlan(); showToast(`已推迟到 ${task.date.slice(5)}`);
-  }
-  async function restoreSchedule() { await ensureSchedule(true); refreshDashboard(); renderPlan(); showToast('已恢复本阶段推荐安排'); }
+  async function deferToTomorrow() { await Long.defer();refreshDashboard();renderPlan(); }
+  async function restoreSchedule() { navTo('plan');showToast('在主计划中选择“从今天重新安排”，预览后确认。'); }
 
   function bindUI() {
     $$('[data-nav]').forEach(b=>b.addEventListener('click',()=>navTo(b.dataset.nav)));
@@ -1855,7 +1849,7 @@
     $('#toggleBetaTelemetry').addEventListener('click',toggleBetaTelemetry); $('#exportBetaJson').addEventListener('click',exportBetaJson); $('#exportBetaCsv').addEventListener('click',exportBetaCsv); $('#clearBetaTelemetry').addEventListener('click',clearBetaTelemetry);
     ['betaGesture','betaHapticRating','betaInterference'].forEach(id=>{const el=$('#'+id);if(el)el.addEventListener('input',()=>{const out=id==='betaGesture'?'#betaGestureV':id==='betaHapticRating'?'#betaHapticV':'#betaInterferenceV';$(out).textContent=el.value;});});
     $('#saveBetaFeedback').addEventListener('click',saveBetaFeedback);
-    window.addEventListener('visibilitychange',()=>{if(document.hidden&&currentSession&&settings.betaTelemetryEnabled)recordBetaEvent('APP_HIDDEN_DURING_SESSION',{phase:currentSession.phase});});
+    document.addEventListener('visibilitychange',()=>{if(document.hidden){pauseSession();showCover();}else releaseWake();}); window.addEventListener('pagehide',()=>{pauseSession();persistCurrentSoon();});
 
     $('#startTraining').addEventListener('click',()=>launchProgram($('#startTraining').dataset.programId||'standard',$('#startTraining').dataset.scheduleId||null));
     $('#deferToday').addEventListener('click',deferToTomorrow); $('#restoreSchedule').addEventListener('click',restoreSchedule);
@@ -1864,17 +1858,19 @@
     $$('[data-pain]').forEach(b=>b.addEventListener('click',()=>{pain=b.dataset.pain==='true';$$('[data-pain]').forEach(x=>x.classList.toggle('selected',x===b));$('#painNotice').style.display=pain?'block':'none';}));
     $('#continueCheckin').addEventListener('click',()=>{
       currentSession.checkin={stress:+$('#stress').value,fatigue:+$('#fatigue').value,pelvicTension:+$('#tension').value,pain}; recordBetaEvent('CHECKIN_CONTINUED',{painFlag:!!pain}); event('CHECKIN_COMPLETED',currentSession.checkin);
-      if((currentSession.checkin.stress>=8||currentSession.checkin.fatigue>=8)&&!pain&&!confirm('今天状态偏疲劳。继续原计划吗？\n选择“取消”可返回今日页。')){navTo('dashboard');return;}
-      if(pain&&!confirm('你记录了疼痛或明显不适。继续训练前，建议先确认是否需要暂停并寻求专业评估。仍要进入训练吗？')){navTo('dashboard');return;}
+      if((currentSession.checkin.stress>=8||currentSession.checkin.fatigue>=8)&&!pain&&!confirm('今天状态偏疲劳。继续原计划吗？\n取消后留在训练前记录，可降低安排或结束本次。')){show('checkin');return;}
+      if(pain){showToast('出现不适，先结束并记录；持续或明显时寻求专业评估。');finishSession();return;}
       startNextModule();
     });
 
-    $('#guidedPause').addEventListener('click',pauseSession); $('#completeModule').addEventListener('click',()=>completeCurrentModule('COMPLETED')); $('#skipModule').addEventListener('click',()=>completeCurrentModule('SKIPPED'));
+    const guideAction=status=>{if(now()<moduleActionReadyAt||currentSession?.phase!=='MODULE_ACTIVE'||currentSession?.pausedAt)return;moduleActionReadyAt=now()+350;completeCurrentModule(status);};
+    $('#guidedPause').addEventListener('click',pauseSession); $('#completeModule').addEventListener('click',()=>guideAction('COMPLETED')); $('#skipModule').addEventListener('click',()=>guideAction('SKIPPED'));
     $('#pauseBtn').addEventListener('click',pauseSession); $('#resumePause').addEventListener('click',resumePaused); $('#endFromPause').addEventListener('click',finishSession);
 
     const surface=$('#gestureSurface');
-    surface.addEventListener('pointerdown',e=>{touchStart={x:e.clientX,y:e.clientY,t:now()};longPressTimer=setTimeout(()=>openFinishSheet('early'),900);surface.setPointerCapture?.(e.pointerId);});
+    surface.addEventListener('pointerdown',e=>{if(!settings.gestures||currentSession?.pausedAt)return;touchStart={x:e.clientX,y:e.clientY,t:now()};longPressTimer=setTimeout(()=>openFinishSheet('early'),900);surface.setPointerCapture?.(e.pointerId);});
     surface.addEventListener('pointermove',e=>{if(!touchStart)return;if(Math.hypot(e.clientX-touchStart.x,e.clientY-touchStart.y)>12)clearTimeout(longPressTimer);});
+    surface.addEventListener('pointercancel',()=>{clearTimeout(longPressTimer);touchStart=null;lastTap=0;});
     surface.addEventListener('pointerup',e=>{
       clearTimeout(longPressTimer); if(!touchStart)return; const dx=e.clientX-touchStart.x,dy=e.clientY-touchStart.y,dt=now()-touchStart.t;touchStart=null;
       if(Math.abs(dy)>45&&Math.abs(dy)>Math.abs(dx)){changeArousal(dy<0?1:-1);return;}
@@ -1918,7 +1914,7 @@
     });
     $('#disableExternalCoach').addEventListener('click',async()=>{settings.externalCoachEnabled=false;settings.externalCoachConsent=false;settings.coachChatMode='local';externalCoachToken='';await DB.setMeta('settings',settings);renderSettings();renderCoachPanel();showToast('外部 Coach 已关闭');});
     $('#promptModes').addEventListener('click',async e=>{const b=e.target.closest('[data-mode]');if(!b)return;const mode=b.dataset.mode;if(mode==='autonomous'&&settings.promptMode!=='autonomous'&&!confirm('自主模式会关闭自动 Stop 提示。训练时由你自己判断何时单击进入 Recovery，系统只记录实际 Stop 等级。确认启用吗？'))return;settings.promptMode=mode;await DB.setMeta('settings',settings);renderSettings();showToast(`已切换：${PROMPT_MODES[mode]}`);});
-    $('#clearData').addEventListener('click',async()=>{if(!confirm('删除全部本地训练数据并重置训练计划？此操作无法撤销。'))return;await DB.clearTrainingData();sessionCache=[];customPrograms=[];adaptiveHistory=[];simulationAdaptiveHistory=[];coachHistory=[];coachChatMessages=[];externalCoachToken='';acceptanceResults={};betaTelemetry=[];betaInstallId='';plan=defaultPlan();adaptiveDecision=adaptiveEngine([]);await DB.setMeta('plan',plan);await DB.setMeta('customPrograms',customPrograms);await DB.setMeta('adaptiveDecision',adaptiveDecision);await DB.setMeta('adaptiveHistory',adaptiveHistory);await DB.setMeta('simulationAdaptiveHistory',simulationAdaptiveHistory);await DB.setMeta('coachHistory',coachHistory);await DB.setMeta('coachChatMessages',coachChatMessages);await DB.setMeta('acceptanceResults',acceptanceResults); await DB.setMeta('betaTelemetry',betaTelemetry); await DB.setMeta('betaInstallId',betaInstallId);await ensureSchedule(true);refreshDashboard();renderPlan();renderSettings();showToast('本地训练数据已清空');});
+    $('#clearData').addEventListener('click',async()=>{if(!confirm('删除全部本地训练数据并重置训练计划？此操作无法撤销。'))return;await DB.clearTrainingData();Long.reset();acceptedParameters={stopThreshold:7,resumeThreshold:5};parameterHistory=[];sessionCache=[];customPrograms=[];adaptiveHistory=[];simulationAdaptiveHistory=[];coachHistory=[];coachChatMessages=[];externalCoachToken='';acceptanceResults={};betaTelemetry=[];betaInstallId='';plan=defaultPlan();adaptiveDecision=adaptiveEngine([]);await DB.setMeta('plan',plan);await DB.setMeta('customPrograms',customPrograms);await DB.setMeta('adaptiveDecision',adaptiveDecision);await DB.setMeta('adaptiveHistory',adaptiveHistory);await DB.setMeta('simulationAdaptiveHistory',simulationAdaptiveHistory);await DB.setMeta('coachHistory',coachHistory);await DB.setMeta('coachChatMessages',coachChatMessages);await DB.setMeta('acceptanceResults',acceptanceResults); await DB.setMeta('betaTelemetry',betaTelemetry); await DB.setMeta('betaInstallId',betaInstallId);await ensureSchedule(true);refreshDashboard();renderPlan();renderSettings();showToast('本地训练数据已清空');});
 
     $('#programList').addEventListener('click',async e=>{const start=e.target.closest('[data-start-program]'),sched=e.target.closest('[data-schedule-program]'),del=e.target.closest('[data-delete-program]');if(start)launchProgram(start.dataset.startProgram,null);else if(sched)await scheduleProgram(sched.dataset.scheduleProgram);else if(del&&confirm('删除这个自定义训练方案？'))await deleteProgram(del.dataset.deleteProgram);});
     $('#scheduleCalendar').addEventListener('click',e=>{if(e.target.closest('.drag-handle'))return;const card=e.target.closest('[data-start-schedule]');if(!card)return;const item=(plan.schedule||[]).find(x=>x.id===card.dataset.startSchedule);if(item)launchProgram(item.programId,item.id);});
@@ -1939,21 +1935,19 @@
     pending.stopStartBaseCycles=0; pending.targetCycles=pending.targetCycles||stage().cycles; return pending;
   }
   async function recoverPendingSession() {
-    let pending=await DB.getCurrentSession(); if(!pending)return; pending=upgradePendingSession(pending); currentSession=pending;
+    let pending=await DB.getCurrentSession();if(!pending)return;
+    pending=Core.recover(upgradePendingSession(pending));currentSession=pending;
     if(pending.phase==='REVIEW'||(pending.endedAt&&!pending.review)){prefillReviewSignal();configureReview();show('review');return;}
-    if(!confirm('发现一条未完成训练记录。继续这次训练吗？')){await DB.clearCurrentSession();currentSession=null;return;}
-    currentSession.pausedAt=null; ensureActiveClock(); event('SESSION_RESUMED',{recovered:true});
-    if(currentSession.phase==='CHECK_IN'){show('checkin');return;}
-    if(currentSession.phase==='PREPARE'){currentSession.phase='MODULE_ACTIVE';currentSession.moduleIndex=0;currentSession.guidedState=null;startNextModule();return;}
-    if(currentSession.phase==='MODULE_ACTIVE'){show('moduleGuide');renderGuided();runGuidedTimer();return;}
-    show('session');renderSession();runSessionTimer();
+    $('#pauseTime').textContent=fmt(activeElapsed());$('#pause .muted').textContent=pending.recoveryNotice;
+    if(pending.currentCycle&&pending.currentCycle.stopActiveElapsedMs==null){pending.currentCycle.stopActiveElapsedMs=activeElapsed();pending.currentCycle.legacyRecovery=true;}
+    show('pause');
   }
 
   async function init() {
     try {
       await DB.init();
       sessionCache=await DB.getAllSessions();
-      settings={haptics:true,promptMode:'full',developerMode:false,includeSimulatedData:false,coachChatMode:'local',externalCoachEnabled:false,externalCoachEndpoint:'',externalCoachModel:'',externalCoachConsent:false,betaTelemetryEnabled:false,...(await DB.getMeta('settings',{}))};
+      settings={gestures:false,leftHanded:false,keepAwake:false,haptics:true,promptMode:'full',developerMode:false,includeSimulatedData:false,coachChatMode:'local',externalCoachEnabled:false,externalCoachEndpoint:'',externalCoachModel:'',externalCoachConsent:false,betaTelemetryEnabled:false,...(await DB.getMeta('settings',{}))};
       customPrograms=await DB.getMeta('customPrograms',[]);
       adaptiveHistory=await DB.getMeta('adaptiveHistory',[]);
       simulationAdaptiveHistory=await DB.getMeta('simulationAdaptiveHistory',[]);
@@ -1964,15 +1958,133 @@
       betaInstallId=await DB.getMeta('betaInstallId','');
       plan=await DB.getMeta('plan',null); if(!plan){plan=defaultPlan();await DB.setMeta('plan',plan);} if(!plan.version||plan.version<2)plan.version=2;
       await ensureSchedule();
+      acceptedParameters=await DB.getMeta('acceptedParameters',{stopThreshold:7,resumeThreshold:5});parameterHistory=await DB.getMeta('parameterHistory',[]);
+      await Long.init({db:DB,legacyPlan:()=>plan,programs:allPrograms,sessions:()=>sessionCache,exerciseName:key=>EXERCISES[key].name,toast:showToast,download:downloadBlob,changed:()=>refreshDashboard(),isTraining:()=>!!currentSession&&currentSession.phase!=='COMPLETED',isTaskRunning:id=>!!id&&currentSession?.scheduleItemId===id&&currentSession.phase!=='COMPLETED',viewSession:renderHistoryDetail,launch:(program,task)=>launchProgram(program.id,task.id)});
       adaptiveDecision=adaptiveEngine(sessionCache); await DB.setMeta('adaptiveDecision',adaptiveDecision);
       await ensureAdaptiveHistory();
       await maybeAdvancePlan();
-      resetBuilderState(); bindUI(); refreshDashboard(); renderPlan(); renderSettings(); await recoverPendingSession();
+      resetBuilderState(); bindUI(); bindNewUI(); refreshDashboard(); renderPlan(); renderSettings(); await recoverPendingSession();
       document.body.dataset.appReady='true';
-      if('serviceWorker'in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
+      registerWorker(); checkpointTimer=setInterval(()=>{if(currentSession&&!currentSession.pausedAt&&currentSession.phase!=='COMPLETED')persistCurrentSoon();},5000); $('#saveStatus').textContent='已读取本机数据';if(!await DB.getMeta('onboardingDone',false)&&!currentSession)$('#rehearsalDialog').showModal();
     } catch(err) {
-      console.error(err); $('#adaptiveCard').innerHTML='<strong>本地数据层初始化失败</strong><div class="reason">请使用现代浏览器并通过 HTTP/HTTPS 打开本原型。</div>'; $('#dbStatus').textContent='初始化失败'; document.body.dataset.appReady='error';
+      console.error(err); $('#adaptiveCard').innerHTML='<strong>本地数据读取失败</strong><div class="reason">'+escapeHtml(err.message)+'。原始迁移数据不会清除。请保留当前浏览器数据并重试。</div>'; $('#dbStatus').textContent='初始化失败'; document.body.dataset.appReady='error';
     }
+  }
+
+  function requestWake() {
+    if(!settings.keepAwake||wakeLock||document.hidden||currentSession?.pausedAt||!navigator.wakeLock)return;
+    navigator.wakeLock.request('screen').then(lock=>{wakeLock=lock;lock.addEventListener('release',()=>{if(wakeLock===lock)wakeLock=null;});}).catch(()=>{});
+  }
+  function releaseWake(){if(wakeLock){wakeLock.release().catch(()=>{});wakeLock=null;}}
+  function showCover(){if(currentSession&&currentSession.phase!=='COMPLETED')pauseSession();$('#privacyCover').classList.add('show');}
+  function renderPreferences(){
+    document.body.classList.toggle('left-handed',!!settings.leftHanded);
+    $('#toggleGestures').textContent='手势：'+(settings.gestures?'开启':'关闭');
+    $('#toggleHand').textContent=settings.leftHanded?'左手布局':'右手布局';
+    $('#toggleWake').textContent='屏幕常亮：'+(settings.keepAwake?'开启':'关闭');
+    DB.getMeta('lastExportAt',null).then(at=>{$('#backupReminder').textContent=at?'上次发起备份：'+formatDateTime(at)+(now()-at>7*DAY_MS?'。建议生成新备份，不能确认上次文件已保存。':'。请自行核对文件保存。'):'尚未生成完整备份。换设备或域名前，请先备份。';});
+  }
+  function openEvidence(){
+    $('#evidenceBody').innerHTML=`<p>${escapeHtml(Content.guidance.plan.text)}</p><p class="small">内容版本 ${Content.version} · 核对 ${Content.checkedAt}</p>`+Object.entries(Content.modules).map(([key,m])=>`<div class="field"><strong>${escapeHtml(EXERCISES[key].name)}</strong><p>${escapeHtml(m.detail)}</p><p class="small">${escapeHtml(m.limitation)}</p><p>${m.sourceIds.map(id=>`<a href="${escapeHtml(Content.sources[id].url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(Content.sources[id].institution)}</a>`).join(' · ')}</p></div>`).join('')+Object.values(Content.guidance).map(g=>`<p class="small">${escapeHtml(g.text)} · ${escapeHtml(g.kind||'健康教育')} ${g.sourceIds.map(id=>`<a href="${escapeHtml(Content.sources[id].url)}" target="_blank" rel="noopener noreferrer">来源</a>`).join(' ')}</p>`).join('')+Object.values(Content.sources).map(source=>`<div class="field"><a href="${escapeHtml(source.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(source.title)}</a><p class="small">${escapeHtml(source.institution)} · ${source.year||'页面未注明年份'} · ${source.checkedAt}</p><p class="small">${escapeHtml(source.supports)}</p></div>`).join('');
+    $('#evidenceDialog').showModal();
+  }
+  function reportAndFilters(){
+    const samples=analysisSessions().filter(s=>s.review&&s.endedAt),real=samples.filter(s=>!s.simulated),start=weekStartKey(now()),week=real.filter(s=>weekStartKey(sessionTimestamp(s))===start),usable=week.filter(s=>hasExercise(s,'stop_start')&&dataQuality(s).usableForTrend);
+    const plan=Long.active(),tasks=plan?.tasks.filter(t=>weekStartKey(LongPlans.parseDate(t.date).getTime())===start)||[],done=tasks.filter(t=>t.status==='COMPLETED').length;
+    const latest=usable.at(-1),same=latest?real.filter(s=>Core.conditionKey(s)===Core.conditionKey(latest)&&hasExercise(s,'stop_start')&&dataQuality(s).usableForTrend).sort((a,b)=>sessionTimestamp(a)-sessionTimestamp(b)):[],recent=same.slice(-3),previous=same.slice(-6,-3);
+    let change='同条件前后窗口各不足3条，暂不判断变化。';
+    if(recent.length===3&&previous.length===3){const before=average(previous.map(s=>computeMetrics(s).control)),after=average(recent.map(s=>computeMetrics(s).control));if(Number.isFinite(before)&&Number.isFinite(after))change=`同条件最近3次控制感均值 ${after.toFixed(1)}/10，之前3次 ${before.toFixed(1)}/10。仅描述个人记录，不证明训练效果。`;}
+    const excluded=week.length-usable.length;
+    $('#weeklyReport').innerHTML=`<h2>个人周复盘</h2><p>本周 ${week.length} 次记录 · 主计划 ${done}/${tasks.length} 次完成 · ${usable.length} 条可比较动停记录 · ${excluded} 条不参与动停比较</p><p class="small">${Content.guidance.trend.text}</p><p>值得关注：${escapeHtml(change)}</p><p class="small">下一次：${escapeHtml(Content.modules.stop_start.short)}</p>`;
+    const select=(key,label,values)=>`<label>${label}<select class="text-input" data-filter="${key}"><option value="">全部</option>${values.map(([value,text])=>`<option value="${escapeHtml(value)}" ${insightFilter[key]===value?'selected':''}>${escapeHtml(text)}</option>`).join('')}</select></label>`;
+    const unique=key=>[...new Set(sessionCache.map(key).filter(Boolean))].map(value=>[value,value]);
+    $('#insightFilters').innerHTML=`<details><summary>筛选条件与计时口径</summary>${select('plan','长期计划',Long.meta().longPlans.map(p=>[p.id,p.name]))}${select('stage','阶段',unique(s=>s.planSnapshot?.stageName))}${select('program','单次方案',unique(s=>s.programSnapshot?.name))}${select('mode','提示模式',Object.entries(PROMPT_MODES))}${select('clock','计时口径',[['2','新版有效时钟'],['1','旧版：暂停口径不可靠']])}<label>开始日期<input type="date" class="text-input" data-filter="from" value="${insightFilter.from}"></label><label>结束日期<input type="date" class="text-input" data-filter="to" value="${insightFilter.to}"></label><p class="small">默认仅比较新版计时。选择全部会混合计时口径，仅供浏览，不作前后改善结论。</p></details>`;
+  }
+  function updateReady(){const training=!!currentSession&&currentSession.phase!=='COMPLETED';$('#applyUpdate').hidden=!waitingWorker||training;$('#applyUpdate').disabled=training;}
+  async function registerWorker(){
+    if(!('serviceWorker'in navigator))return;
+    try{
+      const registration=await navigator.serviceWorker.register('./sw.js');
+      waitingWorker=registration.waiting;updateReady();
+      registration.addEventListener('updatefound',()=>{const worker=registration.installing;worker?.addEventListener('statechange',()=>{if(worker.state==='installed'&&navigator.serviceWorker.controller){waitingWorker=registration.waiting;updateReady();}});});
+      navigator.serviceWorker.addEventListener('controllerchange',()=>{if(updateRequested&&(!currentSession||currentSession.phase==='COMPLETED'))location.reload();});
+    }catch{showToast('离线缓存未启用，请检查 HTTPS 与网络');}
+  }
+  function bindNewUI(){
+    const on=(id,fn)=>$('#'+id).addEventListener('click',()=>Promise.resolve().then(fn).catch(error=>showToast(error.message)));
+    on('levelDown',()=>changeArousal(-1));on('levelUp',()=>changeArousal(1));on('explicitStop',()=>confirmStop(true));on('explicitResume',resumeCycle);on('explicitMarker',openQuickMarker);on('explicitFinish',finishSession);
+    on('endCheckin',()=>{if(currentSession){currentSession.checkin={stress:+$('#stress').value,fatigue:+$('#fatigue').value,pelvicTension:+$('#tension').value,pain};finishSession();}});
+    on('cancelCheckin',async()=>{await DB.clearCurrentSession();currentSession=null;pendingLaunch=null;updateReady();navTo('dashboard');showToast('已取消，原安排保留');});
+    on('associateTraining',async()=>{const id=$('#associateTask').value;if(!id||!currentSession)return;const task=Long.tasks().find(t=>t.id===id);if(!task)return;const before=structuredClone(Long.meta()),copy=structuredClone(currentSession);copy.scheduleItemId=id;copy.longPlanId=task.planId;Long.markCompleted(id,copy.id);try{await DB.completeSession(copy,Long.meta());currentSession=copy;sessionCache=sessionCache.map(s=>s.id===copy.id?copy:s);renderSummary();showToast('已关联，实际训练时间保留');}catch(error){Long.hydrate(before);throw error;}});
+    on('retrySave',persistCurrentSoon);on('exportCurrent',exportJsonBackup);on('showPrivacy',showCover);on('hidePrivacy',()=>$('#privacyCover').classList.remove('show'));
+    on('exportPendingReview',exportJsonBackup);
+    for(const [id,key] of [['toggleGestures','gestures'],['toggleHand','leftHanded'],['toggleWake','keepAwake']])on(id,async()=>{settings[key]=!settings[key];await DB.setMeta('settings',settings);renderPreferences();if(key==='keepAwake'){if(settings[key])requestWake();else releaseWake();}});
+    on('showEvidence',openEvidence);on('closeEvidence',()=>$('#evidenceDialog').close());
+    on('applyUpdate',()=>{if(!currentSession||currentSession.phase==='COMPLETED'){updateRequested=true;waitingWorker?.postMessage({type:'APPLY_UPDATE'});}});
+    on('closeBackup',()=>{$('#backupDialog').close();$('#backupPassword').value='';$('#backupPasswordAgain').value='';});
+    $('#backupDialog').addEventListener('close',()=>{$('#backupPassword').value='';$('#backupPasswordAgain').value='';});
+    $('#restoreDialog').addEventListener('close',()=>{$('#restorePassword').value='';pendingRestore=null;restorePreview=null;});
+    $('#backupForm').addEventListener('submit',async event=>{
+      event.preventDefault();const button=event.submitter;button.disabled=true;
+      try{
+        let payload=await backupPayload(),encrypted=$('#backupMode').value==='encrypted';
+        if(encrypted){const password=$('#backupPassword').value;if(password!==$('#backupPasswordAgain').value)throw new Error('两次密码不一致');payload=await Backup.encrypt(payload,password);}
+        else if(!confirm('明文完整备份包含私密事件和对话。仍要导出吗？'))return;
+        downloadBlob(JSON.stringify(payload,null,2),`training-backup-${dateKey()}${encrypted?'-encrypted':''}.json`,'application/json');
+        let reminderSaved=true;try{await DB.setMeta('lastExportAt',now());}catch{reminderSaved=false;}$('#backupDialog').close();renderPreferences();showToast('备份已生成并发起下载，请核对文件'+(reminderSaved?'':'；提醒时间未保存'));
+      }catch(error){$('#backupError').textContent=error.message;}
+      finally{button.disabled=false;$('#backupPassword').value='';$('#backupPasswordAgain').value='';}
+    });
+    on('closeRestore',()=>{$('#restoreDialog').close();pendingRestore=null;restorePreview=null;$('#restorePassword').value='';});
+    $('#restoreMode').addEventListener('change',()=>{restorePreview=null;$('#restoreSubmit').textContent='校验并预览';});
+    $('#restoreForm').addEventListener('submit',async event=>{
+      event.preventDefault();const button=event.submitter;button.disabled=true;
+      try{
+        if(!restorePreview){
+          const data=pendingRestore.format==='stop-action-encrypted-backup'?await Backup.decrypt(pendingRestore,$('#restorePassword').value):Backup.validate(pendingRestore);
+          pendingRestore=data;
+          const replace=$('#restoreMode').value==='replace',merged=Backup.merge(sessionCache,data.sessions);
+          const templateMerge=Backup.merge(Long.meta().longTemplates,data.meta.longTemplates||[]),planMerge=Backup.merge(Long.meta().longPlans,data.meta.longPlans||[]),localTaskIds=new Set(Long.meta().longPlans.flatMap(p=>p.tasks.map(t=>t.id))),taskConflicts=[];
+          const importedPlans=planMerge.sessions.filter(p=>{if(Long.meta().longPlans.some(x=>x.id===p.id))return true;if(p.tasks.some(t=>localTaskIds.has(t.id))){taskConflicts.push(p.id);return false;}return true;}).map(p=>Long.meta().longPlans.some(x=>x.id===p.id)?p:{...p,status:'PAUSED'});
+          const conflicts=[...merged.conflicts,...templateMerge.conflicts.map(id=>'模板:'+id),...planMerge.conflicts.map(id=>'计划:'+id),...taskConflicts.map(id=>'任务ID冲突计划:'+id)];
+          const meta=replace?data.meta:{...Long.meta(),longTemplates:templateMerge.sessions,longPlans:importedPlans};
+          if(replace&&meta.currentSession)meta.currentSession=Core.recover(meta.currentSession);
+          if(replace&&(meta.longPlans||[]).length){const chosen=meta.longPlans.find(p=>p.id===meta.activeLongPlanId);meta.longPlans.forEach(p=>{if(p!==chosen&&p.status==='ACTIVE')p.status='PAUSED';});}
+          restorePreview={sessions:replace?data.sessions:merged.sessions,meta,replace};
+          $('#restoreSummary').textContent=`已校验 ${data.sessions.length} 条记录、${data.meta.longTemplates?.length||0} 个模板、${data.meta.longPlans?.length||0} 个计划。${replace?'将替换本机数据。':'合并后 '+merged.sessions.length+' 条，冲突 '+conflicts.length+' 条，保留本机。冲突ID：'+conflicts.slice(0,20).join('、')}`;
+          $('#restorePassword').value='';$('#restorePasswordLabel').hidden=true;$('#restoreSubmit').textContent='确认提交导入';return;
+        }
+        await DB.importData(restorePreview.sessions,restorePreview.meta,restorePreview.replace);
+        $('#restoreDialog').close();showToast('导入已提交，正在重新读取');location.reload();
+      }catch(error){$('#restoreError').textContent=error.message;}
+      finally{button.disabled=false;}
+    });
+    let demo={level:2,stop:false,paused:false,done:new Set()};
+    const demoRender=()=>{$('#rehearsalLevel').textContent=demo.level;$('#rehearsalHint').textContent=`用＋／－记录感受，Stop后降低等级，再Resume；试试暂停和标记。已体验 ${demo.done.size}/5 项。${demo.paused?'当前暂停。':''}`;};
+    on('startRehearsal',()=>{demo={level:2,stop:false,paused:false,done:new Set()};demoRender();$('#rehearsalDialog').showModal();});
+    on('demoUp',()=>{if(!demo.paused){demo.level=Math.min(8,demo.level+1);demo.done.add('level');demoRender();}});
+    on('demoDown',()=>{if(!demo.paused){demo.level=Math.max(0,demo.level-1);demo.done.add('level');demoRender();}});
+    on('demoStop',()=>{if(!demo.paused){demo.stop=true;demo.done.add('stop');demoRender();}});
+    on('demoResume',()=>{if(demo.stop&&!demo.paused&&demo.level<=5){demo.stop=false;demo.done.add('resume');demoRender();}else $('#rehearsalHint').textContent='先Stop，降低等级，再继续。';});
+    on('demoPause',()=>{demo.paused=!demo.paused;demo.done.add('pause');demoRender();});on('demoMarker',()=>{demo.done.add('marker');demoRender();});
+    on('closeRehearsal',async()=>{await DB.setMeta('onboardingDone',true);$('#rehearsalDialog').close();});demoRender();
+    $('#insightFilters').addEventListener('change',event=>{const key=event.target.dataset.filter;if(key){insightFilter[key]=event.target.value;renderInsights();reportAndFilters();}});
+    const oldRender=renderInsights;renderInsights=()=>{oldRender();reportAndFilters();};
+    window.addEventListener('unhandledrejection',()=>{$('#saveStatus').textContent='操作未完成 · 请重试或导出';});
+    window.addEventListener('training-db-blocked',()=>showToast('请关闭其他标签页后重试数据库升级'));
+    if(typeof BroadcastChannel!=='undefined'){
+      const channel=new BroadcastChannel('stop-action-tabs');channel.onmessage=event=>{if(event.data==='hello'){channel.postMessage('present');showToast('已打开多个标签页，请只在一个页面训练');}else if(event.data==='present')showToast('已有其他标签页，请只在一个页面训练');};channel.postMessage('hello');
+    }
+    $$('input[type="range"]').forEach(input=>{if(!input.getAttribute?.('aria-label'))input.setAttribute('aria-label',input.id);});
+    $('#arousal').setAttribute('role','status');$('#arousal').setAttribute('aria-live','polite');
+    document.addEventListener('keydown',event=>{
+      const sheet=['quickMarkerSheet','finishSheet','privacyCover'].map(id=>$('#'+id)).find(el=>el?.classList.contains('show'));if(!sheet)return;
+      if(event.key==='Escape'){event.preventDefault();if(sheet.id==='quickMarkerSheet')closeQuickMarker();else if(sheet.id==='finishSheet')cancelFinishAction();else sheet.classList.remove('show');}
+      if(event.key==='Tab'){const controls=[...sheet.querySelectorAll('button,input,select,textarea,a[href]')].filter(el=>!el.disabled);if(!controls.length)return;const first=controls[0],last=controls.at(-1);if(event.shiftKey&&(document.activeElement===first||!sheet.contains(document.activeElement))){event.preventDefault();last.focus();}else if(!event.shiftKey&&(document.activeElement===last||!sheet.contains(document.activeElement))){event.preventDefault();first.focus();}}
+    });
+    $('#checkin .screen-title + .muted')?.remove();
+    $('#pause .muted').textContent=Content.guidance.pause.text;
+    $('#review > .muted').textContent=Content.guidance.review.text;
   }
 
   function configureBetaTelemetryForTest() { settings.betaTelemetryEnabled=true; betaInstallId='test-install'; betaTelemetry=[]; }

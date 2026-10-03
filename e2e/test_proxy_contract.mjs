@@ -2,10 +2,11 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 
-const root = path.resolve(new URL('..', import.meta.url).pathname);
+const root = fileURLToPath(new URL('..', import.meta.url));
 const relayDir = path.join(root, 'relay');
 const tmp = await mkdtemp(path.join(os.tmpdir(), 'ec-v09-'));
 const tokenFile = path.join(tmp, 'relay_token');
@@ -67,7 +68,9 @@ const proxyHeaders = {
 try {
   const ready = await waitReady();
   assert.equal(ready.ok, true);
-  assert.equal(ready.rateLimiter.backend, 'memory');
+  assert.equal(ready.coreReady, true);
+  const coachReady=await (await fetch(`${base}/api/coach/ready`)).json();
+  assert.equal(coachReady.rateLimiter.backend, 'memory');
 
   const ok = await postCoach(proxyHeaders);
   assert.equal(ok.status, 200);

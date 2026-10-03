@@ -1,0 +1,11 @@
+{
+  "name": "stop-action",
+  "version": "2.0.0",
+  "private": true,
+  "scripts": {
+    "test": "node tests/core.cjs && node tests/sw.cjs && node smoke_runtime.js app.js && node relay/test_relay.mjs && node relay/test_upstream_contract.mjs && node relay/test_rate_limit.mjs && node e2e/test_proxy_contract.mjs && node tests/security.mjs",
+    "test:browser": "node tests/browser.cjs",
+    "qa": "node tests/qa.cjs"
+  },
+  "devDependencies": { "playwright": "1.62.1" }
+}

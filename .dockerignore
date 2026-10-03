@@ -11,3 +11,10 @@ docs
 qa.sh
 smoke_runtime.js
 e2e
+tests
+test-results
+playwright-report
+.test-browsers
+**/.env
+**/.env.*
+package-lock.json

@@ -1,6 +1,7 @@
 name: Build and publish Docker image
 
 on:
+  pull_request:
   push:
     branches: [main]
     paths:
@@ -8,6 +9,17 @@ on:
       - ".dockerignore"
       - "index.html"
       - "app.js"
+      - "content.js"
+      - "plans.js"
+      - "plan-ui.js"
+      - "training-core.js"
+      - "backup.js"
+      - "tests/**"
+      - "e2e/**"
+      - "smoke_runtime.js"
+      - "package.json"
+      - "package-lock.json"
+      - "qa.sh"
       - "db.js"
       - "manifest.webmanifest"
       - "sw.js"
@@ -27,7 +39,35 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  qa:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run qa
+      - run: npx playwright install --with-deps chromium webkit
+        if: runner.os == 'Linux'
+      - run: npm run test:browser
+        if: runner.os == 'Linux'
+      - run: npm run test:browser
+        if: runner.os == 'Linux'
+        env:
+          BROWSER: webkit
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-results-${{ runner.os }}
+          path: test-results/
   docker:
+    needs: qa
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

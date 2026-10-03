@@ -1,6 +1,9 @@
 .DS_Store
 *.zip
 node_modules/
+test-results/
+playwright-report/
+.test-browsers/
 .env
 *.local
 deploy/.env

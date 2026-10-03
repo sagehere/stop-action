@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <link rel="manifest" href="manifest.webmanifest" />
-  <title>训练 · 安全 Relay 原型 v1.0</title>
+  <title>训练 · Stop Action</title>
   <style>
     :root{
       --bg:#0e1116;
@@ -220,6 +220,26 @@
     @media(max-width:440px){.calendar-grid{gap:4px}.calendar-day{min-height:96px;padding:5px}.schedule-chip{font-size:9px;padding:6px 4px}.builder-row{grid-template-columns:auto 1fr 64px}.builder-order{grid-column:2/4}}
     @media (min-width:700px){.app{border-left:1px solid var(--line);border-right:1px solid var(--line)}}
   </style>
+  <style>
+    button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid #b8d6f0;outline-offset:3px}
+    button:disabled{opacity:.4;cursor:default}
+    .calendar-day{min-height:72px;color:var(--text);text-align:center;display:flex;flex-direction:column;justify-content:center;gap:4px}
+    .calendar-day.selected{outline:2px solid #b8d6f0}
+    #longPlanRoot .card{margin-top:14px} #longPlanRoot label{display:block;margin:10px 0}
+    #longPlanRoot .chips label{display:inline-block;margin:6px}
+    #longPlanRoot p{margin:8px 0;line-height:1.6} #longPlanRoot .mini-actions{margin-top:12px}
+    .plan-preview{max-height:300px;overflow:auto;line-height:1.8;font-size:13px;margin:12px 0}
+    .live-controls{padding:10px 18px;display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    .live-controls button{min-height:52px} .left-handed .live-controls{direction:rtl}
+    #saveStatus{position:fixed;top:0;left:50%;transform:translateX(-50%);background:#171b22;z-index:90;padding:3px 8px;font-size:11px;border-radius:0 0 8px 8px}
+    #privacyCover{position:fixed;inset:0;background:#0e1116;z-index:200;display:none;place-content:center;text-align:center;padding:24px}
+    #privacyCover.show{display:grid} #privacyCover button{margin-top:24px}
+    dialog{color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:20px;max-width:480px;width:90%;max-height:85vh;overflow:auto;padding:20px}
+    dialog::backdrop{background:rgba(0,0,0,.75)} dialog label{display:block;margin:12px 0}
+    .toolbar{display:flex;gap:8px;align-items:center;margin:10px 0}.toolbar button{width:auto;padding:10px}
+    #calendarTools{display:grid;grid-template-columns:36px minmax(0,1fr) 36px 52px;gap:6px} #calendarTools input{min-width:0} #calendarTools button{padding:10px 4px;white-space:nowrap}
+    @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+  </style>
 </head>
 <body>
 <div class="app">
@@ -250,7 +270,7 @@
       </div>
 
       <div class="section">
-        <div class="section-head"><h2>训练引擎</h2><span class="muted">自动调整</span></div>
+        <div class="section-head"><h2>训练建议</h2><span class="muted">确认后应用</span></div>
         <div id="adaptiveCard" class="card adaptive"><div class="muted">正在读取近期训练数据…</div></div>
       </div>
 
@@ -258,11 +278,13 @@
     </section>
 
     <section id="plan" class="view">
-      <div class="eyebrow">Training plan</div><div class="screen-title">本周计划</div><p id="planStage" class="muted">正在生成计划…</p>
+      <div class="eyebrow">Training plan</div><div class="screen-title">月历与长期计划</div><p id="planStage" class="muted">正在读取计划…</p>
       <div class="card form-card">
-        <div class="section-head"><h2>日历</h2><span class="muted">拖动 ≡ 调整日期</span></div>
+        <div class="section-head"><h2>月历</h2><span class="muted">点日期查看详情</span></div>
+        <div id="calendarTools" class="toolbar"><button class="secondary" data-calendar="prev" aria-label="上一月">‹</button><input id="calendarMonth" type="month" aria-label="选择月份" class="text-input"><button class="secondary" data-calendar="next" aria-label="下一月">›</button><button class="ghost" data-calendar="today">今天</button></div>
         <div id="scheduleCalendar" class="calendar-grid"></div>
       </div>
+      <div id="longPlanRoot"></div>
       <div class="card"><h2 id="stageTitle">这一阶段练什么</h2><p id="stageDescription" class="muted" style="line-height:1.6"></p><div id="planEngineNote" class="engine-note"></div></div>
       <div class="section">
         <div class="section-head"><h2>训练方案</h2><span class="muted">独立模块 · 自由组合</span></div>
@@ -279,6 +301,7 @@
     </section>
 
     <section id="insights" class="view">
+      <div id="weeklyReport" class="card"></div><div id="insightFilters" class="card"></div>
       <div class="eyebrow">Insights</div><div class="screen-title">数据与复盘</div><p class="muted">只和自己的近期状态比较；方案对比是描述性数据，不代表因果结论。</p>
       <div id="insightTabs" class="insight-tabs">
         <button class="insight-tab active" data-insight-tab="trends">趋势</button>
@@ -323,11 +346,12 @@
           <div class="data-actions"><button id="useBundledRelay" class="secondary">使用同源 Relay</button><button id="testBundledRelay" class="secondary">检测同源 Relay</button><button id="saveExternalCoach" class="secondary">保存 Adapter 设置</button><button id="disableExternalCoach" class="ghost">关闭外部 Coach</button></div>
           <div id="relayHealthStatus" class="data-note">v1.0 自带可部署 Relay：用 relay/server.mjs 启动后，可让 PWA 与 /api/coach 同源运行。认证令牌只保存在当前页面内存，不写 IndexedDB、不进备份。</div>
         </div>
-        <div class="field"><div class="field-head"><strong>隐私模式</strong><span class="muted">默认</span></div><p class="small">通知和训练界面使用“训练 / 等级 / 恢复”等中性表述。</p></div>
+        <div class="field"><div class="field-head"><strong>操作与隐私</strong><span class="muted">本机</span></div><div class="mini-actions"><button id="toggleGestures" class="secondary">手势：关闭</button><button id="toggleHand" class="secondary">右手布局</button><button id="toggleWake" class="secondary">屏幕常亮：关闭</button><button id="showPrivacy" class="secondary">一键遮屏</button><button id="startRehearsal" class="secondary">首次操作演练</button><button id="showEvidence" class="secondary">方法依据与局限</button></div><p class="small">切后台自动暂停并遮罩；操作系统的多任务截图可能仍显示先前画面。</p></div>
         <div class="field"><div class="field-head"><strong>本地数据</strong><span id="sessionCount" class="muted">0 次训练</span></div><div class="db-status"><span>存储引擎</span><b id="dbStatus">IndexedDB</b></div>
           <div class="data-actions"><button id="exportJson" class="secondary">导出 JSON 备份</button><button id="exportCsv" class="secondary">导出 CSV 摘要</button><button id="importJson" class="secondary">恢复 JSON 备份</button><button id="clearData" class="ghost">删除训练数据</button></div>
           <input id="importBackupFile" type="file" accept="application/json,.json" hidden>
           <div class="data-note">JSON 备份包含完整训练事件流，属于高度私密数据，请自行妥善保存。CSV 仅导出每次训练的摘要，不包含逐事件记录。</div>
+          <div id="backupReminder" class="data-note"></div><div class="mini-actions"><button id="retrySave" class="secondary">重试保存</button><button id="exportCurrent" class="secondary">导出当前记录</button></div>
         </div>
         <div class="field"><div class="field-head"><strong>真实使用验收</strong><span id="developerModeLabel" class="muted">关闭</span></div>
           <button id="toggleDeveloperMode" class="secondary">打开验收工具</button>
@@ -356,7 +380,7 @@
         <div class="field"><div class="field-head"><strong>盆底紧张</strong><span id="tensionV">3</span></div><input id="tension" type="range" min="0" max="10" value="3"></div>
         <div class="field"><div class="field-head"><strong>有疼痛或明显不适吗？</strong></div><div class="toggle-row"><button class="choice selected" data-pain="false">否</button><button class="choice" data-pain="true">是</button></div><div id="painNotice" class="notice">如果存在明显或持续疼痛，建议暂停本次训练并考虑专业评估。</div></div>
       </div>
-      <div style="height:14px"></div><button id="continueCheckin" class="primary">继续</button><div style="height:10px"></div><button class="ghost" data-back="dashboard">返回</button>
+      <div style="height:14px"></div><button id="continueCheckin" class="primary">继续</button><div style="height:10px"></div><button id="endCheckin" class="secondary">结束并记录当前状态</button><button id="cancelCheckin" class="ghost">取消本次</button>
     </section>
 
     <section id="moduleGuide" class="view full">
@@ -368,6 +392,7 @@
         <div id="guidedCount" class="count">03:00</div>
         <div id="guidedStep" class="guided-step">自然呼吸，注意呼吸正在发生。</div>
         <div id="guidedMeta" class="guided-meta"></div>
+        <details><summary>操作说明与依据</summary><div id="guidedExplanation" class="small"></div></details>
         <div id="moduleDots" class="module-progress"></div>
         <div class="standalone-actions">
           <button id="completeModule" class="secondary">完成本模块</button>
@@ -385,6 +410,7 @@
           <div id="sessionHint" class="session-hint">↑ 上滑增加 · ↓ 下滑降低</div>
           <div id="gestureHint" class="gesture-hint">达到阈值后按提示操作</div>
         </div>
+        <div class="live-controls" id="liveControls"><button id="levelDown" class="secondary" aria-label="等级降低一">－</button><button id="levelUp" class="secondary" aria-label="等级增加一">＋</button><button id="explicitStop" class="primary">Stop · 停止</button><button id="explicitResume" class="primary">Resume · 继续</button><button id="explicitMarker" class="secondary">记录信号</button><button id="explicitFinish" class="ghost">结束并复盘</button></div>
         <div class="session-bottom"><div id="activeTime">00:00</div><div id="cycleDots" class="cycles"></div><div id="recoveryTime" class="timer-right"></div></div>
         <div id="finishSheet" class="finish-sheet"><button id="finishNow" class="primary">结束训练</button><button id="cancelFinish" class="secondary">继续训练</button></div>
         <div id="quickMarkerSheet" class="bottom-sheet" aria-hidden="true">
@@ -420,7 +446,7 @@
         <div class="review-group"><h3>最明显的信号</h3><div class="chips" id="signals"><button class="chip">呼吸</button><button class="chip">盆底</button><button class="chip">腹部</button><button class="chip">大腿</button><button class="chip">臀部</button><button class="chip">紧张/焦虑</button><button class="chip selected">没有明显信号</button></div></div>
         <div id="awarenessReviewGroup" class="review-group"><h3>有没有提前发现兴奋在升高？</h3><div class="chips" id="awareness"><button class="chip">完全没有</button><button class="chip">一点</button><button class="chip selected">比较明显</button><button class="chip">很早就发现</button></div></div>
       </div>
-      <div style="height:14px"></div><button id="saveReview" class="primary">完成复盘</button>
+      <div style="height:14px"></div><button id="saveReview" class="primary">完成复盘</button><button id="exportPendingReview" class="ghost">导出含当前记录的备份</button>
     </section>
 
     <section id="summary" class="view">
@@ -441,6 +467,7 @@
         <button id="saveBetaFeedback" class="secondary">保存本次实机反馈</button>
       </div>
       <div id="summaryCoachCard" class="card coach-card" style="margin-top:14px"></div>
+      <div id="associateCard" class="card" hidden><label>将自由训练关联到待完成任务<select id="associateTask" class="text-input"></select></label><button id="associateTraining" class="secondary">确认关联</button></div>
       <div class="coach-actions"><button id="summaryOpenCoach" class="secondary">查看完整教练复盘</button><button id="summaryDone" class="primary">回到今日</button></div>
     </section>
   </main>
@@ -450,7 +477,19 @@
   </nav>
 </div>
 <div id="toast" class="toast"></div>
+<div id="saveStatus" role="status" aria-live="polite">正在读取</div>
+<div id="privacyCover"><h1>已遮屏</h1><p class="muted">训练已暂停，返回后由你继续。</p><button id="hidePrivacy" class="primary">返回</button></div>
+<dialog id="backupDialog"><form id="backupForm"><h2>完整备份</h2><label>导出方式<select id="backupMode" class="text-input"><option value="encrypted">密码加密（默认）</option><option value="plain">明文完整备份</option></select></label><label>密码<input id="backupPassword" class="text-input" type="password" autocomplete="new-password"></label><label>再次输入密码<input id="backupPasswordAgain" class="text-input" type="password" autocomplete="new-password"></label><p class="small">至少12个字符。密码丢失无法恢复；密码只在本次操作内使用。</p><p id="backupError" role="alert"></p><button class="primary" type="submit">生成备份</button><button id="closeBackup" class="ghost" type="button">取消</button></form></dialog>
+<dialog id="restoreDialog"><form id="restoreForm"><h2>恢复备份</h2><p id="restoreSummary"></p><label id="restorePasswordLabel">解密密码<input id="restorePassword" type="password" class="text-input" autocomplete="off"></label><label>导入方式<select id="restoreMode" class="text-input"><option value="merge">合并：冲突时保留本机</option><option value="replace">替换：使用备份数据</option></select></label><p id="restoreError" role="alert"></p><button class="primary" type="submit" id="restoreSubmit">校验并预览</button><button id="closeRestore" class="ghost" type="button">取消</button></form></dialog>
+<dialog id="evidenceDialog"><h2>方法依据与局限</h2><div id="evidenceBody"></div><button id="closeEvidence" class="secondary">关闭</button></dialog>
+<dialog id="rehearsalDialog"><h2>操作演练</h2><p id="rehearsalHint" aria-live="polite"></p><strong id="rehearsalLevel">2</strong><div class="live-controls"><button id="demoDown" class="secondary">－</button><button id="demoUp" class="secondary">＋</button><button id="demoStop" class="secondary">Stop</button><button id="demoResume" class="secondary">Resume</button><button id="demoPause" class="secondary">暂停／继续</button><button id="demoMarker" class="secondary">标记</button></div><p class="small">演练不会创建训练记录或进入真实统计。</p><button id="closeRehearsal" class="primary">完成／跳过</button></dialog>
+<button id="applyUpdate" class="secondary" hidden style="position:fixed;bottom:100px;z-index:95;max-width:400px;left:50%;transform:translateX(-50%)">新版本已就绪，训练结束后更新</button>
 <script src="db.js"></script>
+<script src="training-core.js"></script>
+<script src="content.js"></script>
+<script src="plans.js"></script>
+<script src="backup.js"></script>
+<script src="plan-ui.js"></script>
 <script src="app.js"></script>
 
 </body>

@@ -1,9 +1,9 @@
 'use strict';
 const fs=require('fs');
 class FakeClassList{toggle(){} add(){} remove(){} contains(){return false}}
-function fakeEl(){return {style:{},dataset:{},classList:new FakeClassList(),textContent:'',innerHTML:'',value:'4',checked:false,files:[],addEventListener(){},setAttribute(){},removeAttribute(){},appendChild(){},remove(){},click(){},closest(){return null},querySelectorAll(){return []},querySelector(){return null},setPointerCapture(){}}}
+function fakeEl(){return {style:{},dataset:{},classList:new FakeClassList(),textContent:'',innerHTML:'',value:'4',checked:false,files:[],addEventListener(){},setAttribute(){},removeAttribute(){},appendChild(){},remove(){},click(){},showModal(){},close(){},closest(){return null},querySelectorAll(){return []},querySelector(){return null},setPointerCapture(){}}}
 const body=fakeEl();body.dataset={};
-global.document={body,querySelector:()=>fakeEl(),querySelectorAll:()=>[],getElementById:()=>fakeEl(),createElement:()=>fakeEl(),elementFromPoint:()=>null};
+global.document={body,addEventListener(){},querySelector:()=>fakeEl(),querySelectorAll:()=>[],getElementById:()=>fakeEl(),createElement:()=>fakeEl(),elementFromPoint:()=>null};
 global.window=global;window.scrollTo=()=>{};window.addEventListener=()=>{};window.PointerEvent=function(){};window.FileReader=function(){};
 Object.defineProperty(globalThis,'navigator',{value:{vibrate:()=>true},configurable:true});
 global.confirm=()=>true;global.prompt=()=>'';global.alert=()=>{};
@@ -12,6 +12,8 @@ class FakeURL{constructor(raw){const m=String(raw).match(/^(https?):\/\/([^\/]+)
 Object.defineProperty(globalThis,'URL',{value:FakeURL,configurable:true});Object.defineProperty(globalThis,'Blob',{value:function(){},configurable:true});
 const mem=new Map();
 window.TrainingDB={init:async()=>true,getAllSessions:async()=>[],putSession:async()=>{},deleteSession:async()=>{},getMeta:async(k,f)=>mem.has(k)?mem.get(k):f,setMeta:async(k,v)=>{mem.set(k,v)},deleteMeta:async k=>mem.delete(k),setCurrentSession:async()=>{},getCurrentSession:async()=>null,clearCurrentSession:async()=>{},clearTrainingData:async()=>{mem.clear()}};
+window.TrainingDB.importData=async(rows,meta)=>{Object.entries(meta).forEach(([k,v])=>mem.set(k,v));};window.TrainingDB.completeSession=async()=>{};
+for(const file of ['training-core.js','content.js','plans.js','backup.js','plan-ui.js'])eval(fs.readFileSync(file,'utf8'));
 const code=fs.readFileSync(process.argv[2]||'app.js','utf8');
 try{eval(code)}catch(e){console.error('EVAL_ERROR',e);process.exit(2)}
 function assert(cond,msg){if(!cond){console.error('ASSERT_FAIL',msg);process.exit(4)}}
@@ -41,7 +43,7 @@ setTimeout(async()=>{
   assert(!d.validateExternalCoachEndpoint('http://relay.example.com/coach'),'insecure remote relay rejected');
   assert(!!d.validateExternalCoachEndpoint('http://localhost:8787/coach'),'localhost relay allowed');
   assert(d.bundledRelayEndpoint()==='http://localhost:8080/api/coach','bundled same-origin relay endpoint');
-  assert(d.bundledRelayHealthEndpoint()==='http://localhost:8080/api/health','bundled relay health endpoint');
+  assert(d.bundledRelayHealthEndpoint()==='http://localhost:8080/api/coach/ready','bundled relay health endpoint');
   d.configureBetaTelemetryForTest(); d.recordBetaEvent('SWIPE_LEVEL_UP',{phase:'BUILD',arousal:7,signal:'PELVIC_TENSION'});
   const beta=d.betaExportPayload(); assert(beta.format==='stop-action-device-test' && beta.events.length===1,'device test export generated');
   assert(!('arousal' in beta.events[0].meta) && !('signal' in beta.events[0].meta),'device test export strips sensitive training fields');
@@ -55,4 +57,5 @@ setTimeout(async()=>{
   global.fetch=async()=>({ok:true,status:200,json:async()=>({output:{answer:'把停止阈值改为 6',stopThreshold:6,evidence:[]}})});
   let rejected=false; try{await d.callExternalCoach('修改参数');}catch(_){rejected=true} assert(rejected,'external forbidden control response rejected');
   console.log('RUNTIME SMOKE OK');
+  process.exit(0);
 },60);

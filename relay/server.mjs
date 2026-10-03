@@ -43,7 +43,7 @@ const MAX_MESSAGE_CHARS = 1600;
 const MAX_CONTEXT_BYTES = 36 * 1024;
 
 const FORBIDDEN_KEYS = new Set(['stopThreshold','resumeThreshold','trainingWeek','safetyFlag','applyDecision','setThreshold','actions']);
-const FORBIDDEN_CONTEXT_KEYS = new Set(['events','rawEvents','eventStream','sessionId','sessionIds','revisions','revisionLog','exactTimestamp','exactTimestamps']);
+const FORBIDDEN_CONTEXT_KEYS = new Set(['events','rawEvents','eventStream','sessionId','sessionIds','planId','templateId','notes','revisions','revisionLog','exactTimestamp','exactTimestamps']);
 const ALLOWED_RESPONSE_FIELDS = new Set(['answer','focus','evidence','uncertainty','safetyNotice']);
 const rateLimiter = createRateLimiter({ backend: RATE_LIMIT_BACKEND, windowMs: RATE_LIMIT_WINDOW_MS, max: RATE_LIMIT_MAX, redisUrl: REDIS_URL, prefix: RATE_LIMIT_PREFIX, connectTimeoutMs: REDIS_CONNECT_TIMEOUT_MS, failClosed: RATE_LIMIT_FAIL_CLOSED });
 
@@ -224,7 +224,7 @@ const RESPONSE_SCHEMA = {
   required: ['answer','focus','evidence','uncertainty','safetyNotice'],
   additionalProperties: false,
 };
-const COACH_INSTRUCTIONS = `你是训练数据解释层，只解释用户自己的训练摘要。\n\n必须遵守：\n1. 只做观察、解释和下一次关注点，不诊断疾病，不声称治疗有效。\n2. 绝不修改、建议具体修改或输出 Stop/Resume 阈值、训练周次、Safety Flag、日程或 Training Engine 控制指令。\n3. 不把一次训练或小样本当成因果证据；说明不确定性。\n4. 如果输入显示疼痛或 Safety Review，优先给出安全提醒，不继续做表现优化。\n5. 不要求用户追求更长时间、更高刺激或逼近不可逆射精点。\n6. 使用中性、简洁、无评判的中文。\n7. evidence 只能引用输入摘要已有数据，不编造数值。`;
+const COACH_INSTRUCTIONS = `你是训练数据解释层，只解释用户自己的训练摘要。\n\n必须遵守：\n1. 只做观察、解释和下一次关注点，不诊断疾病，不声称治疗有效。\n2. 绝不修改、建议具体修改或输出 Stop/Resume 阈值、训练周次、Safety Flag、日程或 Training Engine 控制指令。\n3. 不把一次训练或小样本当成因果证据；说明不确定性。\n4. 如果输入显示疼痛或 Safety Review，优先给出安全提醒，不继续做表现优化。\n5. 不要求用户追求更长时间、更高刺激或逼近不可逆射精点。\n6. 使用中性、简洁、无评判的中文。\n7. evidence 只能引用输入摘要已有数据，不编造数值。\n8. 0–9是个人主观量表，ART不是临床疗效指标；4/8/12周是产品安排，不能称为验证疗程。不能把专业盆底康复结果外推到App自练。前后窗口各不足3条可比较记录时只作描述。`;
 
 function buildOpenAIRequest(body) {
   const sanitizedConversation = body.conversation.map(t => ({ role: t.role, text: t.text }));
@@ -393,8 +393,12 @@ const MIME = new Map([
   ['.svg','image/svg+xml'],['.md','text/markdown; charset=utf-8'],['.txt','text/plain; charset=utf-8'],
 ]);
 async function serveStatic(req, res, pathname) {
-  let rel = decodeURIComponent(pathname);
+  let rel;
+  try { rel = decodeURIComponent(pathname); }
+  catch { return json(res, 400, { error: 'bad_path' }); }
   if (rel === '/') rel = '/index.html';
+  const publicFiles = new Set(['/index.html','/app.js','/db.js','/content.js','/training-core.js','/plans.js','/plan-ui.js','/backup.js','/manifest.webmanifest','/icon.svg','/sw.js']);
+  if (!publicFiles.has(rel)) return json(res, 404, { error: 'not_found' });
   const full = path.resolve(STATIC_ROOT, '.' + rel);
   if (!full.startsWith(STATIC_ROOT + path.sep) && full !== STATIC_ROOT) return json(res, 403, { error: 'forbidden' });
   try {
@@ -411,7 +415,7 @@ async function serveStatic(req, res, pathname) {
       'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
       'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https: http://localhost:* http://127.0.0.1:*; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
     });
-    res.end(data);
+    res.end(req.method === 'HEAD' ? undefined : data);
   } catch { json(res, 404, { error: 'not_found' }); }
 }
 
@@ -429,7 +433,7 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, {
       ok: true,
       service: 'coach-relay',
-      version: '1.1.0',
+      version: '2.0.0',
       upstream: MOCK_OPENAI ? 'mock' : 'openai-responses',
       modelConfigured: MOCK_OPENAI || !!OPENAI_API_KEY,
       model: OPENAI_MODEL,
@@ -437,13 +441,18 @@ const server = http.createServer(async (req, res) => {
     }, corsHeaders(req));
   }
   if (req.method === 'GET' && url.pathname === '/api/ready') {
+    try { const assets=['index.html','app.js','db.js','content.js','training-core.js','plans.js','plan-ui.js','backup.js','manifest.webmanifest','icon.svg','sw.js'];const results=await Promise.all(assets.map(file=>stat(path.join(STATIC_ROOT,file))));if(results.some(file=>!file.isFile()))throw new Error('Missing runtime file'); }
+    catch { return json(res, 503, { ok: false, service: 'stop-action', error: 'assets_unavailable' }); }
+    return json(res, 200, { ok: true, service: 'coach-relay', coreReady: true, version: '2.0.0', modelConfigured: MOCK_OPENAI || !!OPENAI_API_KEY }, corsHeaders(req));
+  }
+  if (req.method === 'GET' && url.pathname === '/api/coach/ready') {
     const limiter = await rateLimiter.health();
     const modelConfigured = MOCK_OPENAI || !!OPENAI_API_KEY;
     const ok = modelConfigured && limiter.ok;
     return json(res, ok ? 200 : 503, {
       ok,
       service: 'coach-relay',
-      version: '1.1.0',
+      version: '2.0.0',
       modelConfigured,
       rateLimiter: { ok: limiter.ok, backend: limiter.backend, degraded: !!limiter.degraded },
     }, corsHeaders(req));

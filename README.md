@@ -9,11 +9,15 @@
 - 0–9 主观兴奋度记录与 Stop → Recovery → Resume 控制循环
 - ART、Overshoot、主观控制感和身体信号趋势
 - 呼吸、正念、盆底协调、盆底释放等模块自由组合
-- 周计划 / 日历 / Adaptive Engine
+- 自然月日历；4/8/12周内置模板及1–52周自定义计划
+- 阶段与参数建议需确认；一个主计划可叠加自由训练
 - Local-first：训练数据默认保存在浏览器 IndexedDB
 - 可选 Coach Relay；原始逐秒 Event Stream 不发送给外部模型
 - 实机测试数据采集与 JSON / CSV 导出，默认关闭、主动开启
-- PWA / 离线缓存
+- 加密完整备份、原子导入与冲突预览；保留明文与CSV导出
+- 按钮操作、独立首次演练、遮屏、后台暂停和检查点恢复
+- 可追溯中文内容与来源；模板周期属于产品组织安排
+- PWA / 离线缓存 / 训练结束后更新
 - `linux/amd64` + `linux/arm64` Docker 镜像自动发布到 GitHub Container Registry
 
 ## 轻量部署
@@ -243,7 +247,7 @@ curl http://127.0.0.1:8787/api/ready
 curl http://127.0.0.1:8787/api/health
 ~~~
 
-ready 用于应用就绪检查，health 用于 Relay 状态检查。
+`/api/ready`只检查核心静态应用，无模型密钥仍可正常部署。`/api/coach/ready`检查模型配置与限流；`/api/health`保留兼容字段。Coach状态检测不使用缓存。
 
 ### 6. Nginx Proxy Manager 配置
 
@@ -332,7 +336,7 @@ STOP_ACTION_IMAGE=ghcr.io/sagehere/stop-action:v1.0.0
 STOP_ACTION_IMAGE=ghcr.io/sagehere/stop-action:sha-xxxxxxx
 ~~~
 
-出现问题时把 STOP_ACTION_IMAGE 改回已知稳定版本，然后重新 Deploy 即可完成回滚。
+回退前先保留新版本完整备份与升级前备份。把 STOP_ACTION_IMAGE 改回旧镜像摘要并重新部署；客户端恢复步骤与限制见 docs/MIGRATION_AND_BACKUP.md。仅回退服务器不会回退浏览器数据。
 
 ### 11. 备份与迁移
 
@@ -407,7 +411,7 @@ docker login ghcr.io
 - OPENAI_MODEL 与 ALLOWED_MODELS 是否一致。
 - ALLOWED_ORIGINS 是否与实际 HTTPS 域名完全一致。
 - 修改 Secret 后是否重新 Deploy。
-- 反代是否允许 /api/coach、/api/health、/api/ready。
+- 反代是否允许 /api/coach、/api/coach/ready、/api/health、/api/ready。
 
 #### PWA 无法安装
 
@@ -430,7 +434,7 @@ docker login ghcr.io
 
 ## Docker 镜像
 
-GitHub Actions 在 `main` 更新和 `v*` 标签推送后构建：
+GitHub Actions 先在 Windows/Linux 跑 QA，再在 Linux 跑 Chromium/WebKit 浏览器检查；通过后在 `main` 更新和 `v*` 标签推送时构建：
 
 ```text
 linux/amd64
@@ -487,13 +491,13 @@ ghcr.io/sagehere/stop-action:vX.Y.Z
 无需构建前端：
 
 ```bash
-python3 -m http.server 8080
+node relay/server.mjs
 ```
 
 然后访问：
 
 ```text
-http://localhost:8080
+http://localhost:8787
 ```
 
 Relay：
@@ -506,8 +510,15 @@ node server.mjs
 ## QA
 
 ```bash
-./qa.sh
+npm ci
+npm run qa
+npx playwright install chromium webkit
+npm run test:browser
+# Linux/macOS: BROWSER=webkit npm run test:browser
+# PowerShell: $env:BROWSER="webkit"; npm run test:browser
 ```
+
+`./qa.sh`仍兼容 Linux。浏览器测试仅增加开发依赖，前端和 Relay 没有新增运行时依赖。真实手机验收与发布记录见 docs/RELEASE_VALIDATION.md。
 
 主要覆盖：
 
@@ -535,3 +546,12 @@ node server.mjs
 ├── index.html
 └── Dockerfile
 ```
+
+## v2 内容、计划与迁移
+
+- [依据与文案映射](docs/CONTENT_EVIDENCE.md)
+- [长期计划与数据契约](docs/LONG_PLANS.md)
+- [备份、迁移与回退](docs/MIGRATION_AND_BACKUP.md)
+- [发布验证与实机待验收项目](docs/RELEASE_VALIDATION.md)
+
+状态与计时、日历计划、内容、备份分别在 training-core.js、plans.js/plan-ui.js、content.js、backup.js；保留原生 HTML/JavaScript 与 IndexedDB。外部 Coach 不接收原始事件、精确时间、计划 ID 或个人模板目标。
