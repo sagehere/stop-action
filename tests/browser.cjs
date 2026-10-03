@@ -53,8 +53,23 @@ let browser;
   await page.evaluate(()=>navigator.serviceWorker.ready);await page.reload();await page.waitForFunction(()=>document.body.dataset.appReady==='true');
   const cacheKeys=await page.evaluate(()=>caches.keys());assert.ok(cacheKeys.includes('stop-action-v20'));
   await page.evaluate(()=>fetch('/api/health'));const cachedApi=await page.evaluate(async()=>{const cache=await caches.open('stop-action-v20');return !!await cache.match('/api/health');});assert.equal(cachedApi,false);
-  if(!(engine==='webkit'&&process.platform==='win32')){await context.setOffline(true);await page.reload();await page.waitForFunction(()=>document.body.dataset.appReady==='true');await page.locator('#startTraining').click();await page.locator('#continueCheckin').click();assert.equal(await page.locator('#moduleGuide.active').count(),1);await context.setOffline(false);}else console.log('SKIP Windows WebKit offline navigation: Playwright internal error; Linux CI and physical iPhone pending');
+  if(engine==='webkit'){
+    // Playwright #42775: setOffline incorrectly blocks even Service Worker responses.
+    // Stop the origin instead; prove an uncached browser cannot load it before testing cache recovery.
+    const exited=new Promise(resolve=>server.once('exit',resolve));server.kill();await exited;
+    await assert.rejects(fetch(base+'/api/ready'));
+    const uncached=await browser.newContext({serviceWorkers:'block'}),probe=await uncached.newPage();
+    try{await assert.rejects(probe.goto(base));}finally{await uncached.close();}
+  }else await context.setOffline(true);
+  const offlineResponse=await page.reload();assert.equal(offlineResponse.status(),200);assert.equal(offlineResponse.fromServiceWorker(),true);
+  await page.waitForFunction(()=>document.body.dataset.appReady==='true');
+  assert.equal(await page.evaluate(async()=>{try{await fetch('/api/ready');return true;}catch{return false;}}),false,'API remains unavailable instead of being served from cache');
+  const savedBeforeOffline=(await page.evaluate(()=>TrainingDB.getAllSessions())).length;
+  await page.locator('#startTraining').click();await page.locator('#continueCheckin').click();assert.equal(await page.locator('#moduleGuide.active').count(),1);
+  await page.locator('#guidedPause').click();await page.locator('#endFromPause').click();await page.locator('#saveReview').click();await page.waitForSelector('#summary.active');
+  assert.equal((await page.evaluate(()=>TrainingDB.getAllSessions())).length,savedBeforeOffline+1);
+  if(engine!=='webkit')await context.setOffline(false);
   await page.screenshot({path:'test-results/mobile.png',fullPage:true});
-  assert.deepEqual(errors,[]);console.log(`BROWSER ${engine} ${channel||''} OK — lifecycle, plans, ART, write failures, background handler, gestures, backup, atomic rollback${engine==='webkit'&&process.platform==='win32'?' (offline skipped)':', offline'}`);
+  assert.deepEqual(errors,[]);console.log(`BROWSER ${engine} ${channel||''} OK — lifecycle, plans, ART, write failures, background handler, gestures, backup, atomic rollback, cached restart and save (${engine==='webkit'?'origin stopped':'offline emulation'})`);
   await context.close();
 })().catch(e=>{console.error(e);process.exitCode=1;}).finally(async()=>{if(browser)await browser.close();server.kill();});

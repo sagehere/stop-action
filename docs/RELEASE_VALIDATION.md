@@ -10,13 +10,15 @@
 | 偶数中位数、有效时钟、检查点、计时跳跃 | 纯逻辑已通过 |
 | 加密往返、错误密码、篡改、冲突与未知版本 | 已通过；PBKDF2/AES-GCM原生实现 |
 | Chromium浏览器完整流程 | Windows Edge/Chromium，390×844，已通过：逐次编辑预览与模板隔离、训练、ART扣除暂停、写入失败重试、手势/按钮、后台事件处理、备份、事务中断、恢复、离线 |
-| WebKit浏览器完整流程 | Windows Playwright WebKit已通过训练、计划、备份、原子回滚、恢复；离线导航触发Playwright内部错误，Windows该项明确跳过 |
+| WebKit浏览器完整流程 | Windows Playwright WebKit通过训练、计划、备份、原子回滚、恢复；缓存重载测试改为停止测试服务器，验证无缓存页面访问失败、Service Worker响应、API不可用及本地保存。没有跳过该项；仍不能代替真实iPhone断网验收 |
 | 历史版本恢复 | 已通过；真实旧提交 `f517cc93c1aa7dc4a847d9911e3da320186c7398` 的HTML/app/db，隔离数据库恢复v2与明文v3，Session逐字段一致 |
-| Linux QA/Chromium/WebKit | 工作流已配置，未在本机执行；需首次CI通过后记录结果 |
+| Linux QA/Chromium/WebKit | 首次远程CI的Windows/Linux QA及Linux Chromium通过；Linux WebKit在离线模拟处失败。修复后的Linux完整流程结果待新CI确认 |
 | Android Chrome / iPhone Safari与安装PWA | 待实机验收；桌面移动尺寸不是实机结果 |
 | 容器构建、旧镜像拉取、服务器摘要回退 | 待部署环境验收；已验证客户端历史版本恢复，未声称容器回退通过 |
 
 `tests/browser.cjs`使用真实浏览器和IndexedDB；后台事件测试仅模拟visibilitychange处理，不能代替操作系统锁屏/杀进程。测试生成备份与截图位于忽略的test-results目录，不进入Git或镜像。脚本不访问用户真实训练数据库。
+
+2026-10-03首次Linux CI的WebKit步骤在 `setOffline(true)` 后重载失败。这符合Playwright已确认的[上游问题#42775](https://github.com/microsoft/playwright/issues/42775)：离线模拟会提前阻止本应由Service Worker处理的请求。Chromium继续检查浏览器断网模拟；WebKit改为停止本地测试服务器，且使用禁用Service Worker的全新上下文作为失败对照。服务器不可用与设备全局断网不同，真实手机仍待验收。修复后的远程CI结果另行核对，不将测试环境缺陷改写为产品故障。
 
 发布工作流在Windows/Linux跑逻辑与契约QA，Linux跑Chromium和WebKit，通过后才构建并推送amd64/arm64镜像。Dockerfile只复制运行时前端资源和Relay，不复制部署目录、测试、文档或密钥。Relay只提供公开前端白名单。
 
