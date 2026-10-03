@@ -13,12 +13,15 @@ TLS, domains, certificates, and reverse proxying are intentionally **out of scop
 cd deploy
 cp .env.example .env
 mkdir -p secrets
+chmod 700 secrets
 printf '%s' 'YOUR_OPENAI_API_KEY' > secrets/openai_api_key.txt
 printf '%s' 'OPTIONAL_RELAY_TOKEN' > secrets/relay_bearer_token.txt
-chmod 600 secrets/*.txt
+chmod 644 secrets/openai_api_key.txt secrets/relay_bearer_token.txt
 ```
 
 If you do not want Relay Bearer authentication, create an empty `relay_bearer_token.txt`.
+
+**Important:** this image runs as a non-root user. Docker Compose implements `file:` secrets as bind mounts, so a host file set to `600 root:root` is unreadable inside the container. Use `700` on the `secrets/` directory and `644` on the two mounted files.
 
 Default binding is `127.0.0.1:8787`. This is ideal when the external reverse proxy can reach host loopback. If your proxy runs in another isolated Docker stack, either connect it through your existing shared network design or set `APP_BIND=0.0.0.0` and restrict port 8787 with the host firewall.
 
