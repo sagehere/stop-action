@@ -38,8 +38,10 @@ External NPM / Caddy / Traefik / other proxy
 cd deploy
 cp .env.example .env
 mkdir -p secrets
+chmod 700 secrets
 printf '%s' 'YOUR_OPENAI_API_KEY' > secrets/openai_api_key.txt
 printf '%s' '' > secrets/relay_bearer_token.txt
+chmod 644 secrets/openai_api_key.txt secrets/relay_bearer_token.txt
 
 docker compose pull
 docker compose up -d
@@ -190,12 +192,14 @@ ALLOWED_ORIGINS=https://training.example.com,https://training2.example.com
 
 ### 4. 创建 Secret 文件
 
-Compose 使用文件 Secret。通过 Dockge Terminal 或 SSH 进入 Stack 目录：
+Compose 使用文件 Secret。需要注意：Docker Compose 对 `file:` Secret 使用单文件 bind mount，宿主机文件权限会直接影响容器内读取；本镜像以非 root 的 `node` 用户运行，因此 **Secret 文件不能设为 600(root-only)**。
+
+通过 Dockge Terminal 或 SSH 进入 Stack 目录：
 
 ~~~bash
 cd /opt/stacks/stop-action
 mkdir -p secrets
-umask 077
+chmod 700 secrets
 ~~~
 
 如果暂时不用外部 AI Coach，也需要创建两个空文件：
@@ -203,24 +207,24 @@ umask 077
 ~~~bash
 : > secrets/openai_api_key.txt
 : > secrets/relay_bearer_token.txt
-chmod 600 secrets/*.txt
+chmod 644 secrets/openai_api_key.txt secrets/relay_bearer_token.txt
 ~~~
 
 如果要启用外部 AI Coach：
 
 ~~~bash
 printf '%s' 'YOUR_OPENAI_API_KEY' > secrets/openai_api_key.txt
-chmod 600 secrets/openai_api_key.txt
+chmod 644 secrets/openai_api_key.txt
 ~~~
 
 可选地为 Relay 生成 Bearer Token：
 
 ~~~bash
 openssl rand -hex 32 > secrets/relay_bearer_token.txt
-chmod 600 secrets/relay_bearer_token.txt
+chmod 644 secrets/relay_bearer_token.txt
 ~~~
 
-不要把真实 API Key 或 Token 写入 compose.yaml、.env、README 或 Git 仓库。
+这里采用 **目录 700 + 文件 644**：宿主机普通用户无法穿过 `secrets/` 目录，但容器内非 root 用户仍能读取 bind-mounted Secret。不要把真实 API Key 或 Token 写入 compose.yaml、.env、README 或 Git 仓库。
 
 ### 5. 在 Dockge 启动
 
@@ -347,16 +351,33 @@ Redis 默认没有业务持久化数据；训练记录保存在用户浏览器 I
 
 ### 12. 常见故障
 
-#### Secret 文件不存在
+#### Secret 文件不存在或出现 EACCES permission denied
 
 检查：
 
 ~~~bash
 cd /opt/stacks/stop-action
-ls -la secrets/
+ls -ld secrets
+ls -l secrets/
 ~~~
 
-至少应该存在 openai_api_key.txt 和 relay_bearer_token.txt；即使不使用外部 Coach，也要创建空文件。
+至少应该存在 `openai_api_key.txt` 和 `relay_bearer_token.txt`；即使不使用外部 Coach，也要创建空文件。
+
+如果日志出现：
+
+~~~text
+OPENAI_API_KEY_FILE could not be read: EACCES: permission denied
+~~~
+
+修复权限：
+
+~~~bash
+chmod 700 secrets
+chmod 644 secrets/openai_api_key.txt secrets/relay_bearer_token.txt
+docker compose up -d --force-recreate
+~~~
+
+不要把 Secret 文件设置为 `600 root:root`，因为容器以非 root 用户运行，而 Compose 的 file-backed Secret 会保留 bind mount 的文件权限。
 
 #### NPM / Caddy 出现 502
 
