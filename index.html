@@ -236,6 +236,17 @@
     #privacyCover.show{display:grid} #privacyCover button{margin-top:24px}
     dialog{color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:20px;max-width:480px;width:90%;max-height:85vh;overflow:auto;padding:20px}
     dialog::backdrop{background:rgba(0,0,0,.75)} dialog label{display:block;margin:12px 0}
+    .plan-details{margin-top:12px}
+    .plan-details > summary{cursor:pointer;min-height:44px;align-content:center}
+    #quickPlanRoot .section-head button{width:auto;padding:10px 14px}
+    .plan-row{padding:12px 0;border-top:1px solid var(--line)}
+    .plan-row p{margin:4px 0}
+    .plan-row .mini-actions{grid-template-columns:repeat(auto-fit,minmax(104px,1fr))}
+    .plan-row details{margin-top:8px}
+    .plan-row summary{cursor:pointer;min-height:40px;align-content:center}
+    .plan-weekdays{border:0;padding:0;margin:12px 0}
+    .plan-weekdays label{display:inline-flex;align-items:center;gap:5px;min-height:40px;margin:4px 10px 0 0}
+    #planFormError{color:#ffb3ae}
     .toolbar{display:flex;gap:8px;align-items:center;margin:10px 0}.toolbar button{width:auto;padding:10px}
     #calendarTools{display:grid;grid-template-columns:36px minmax(0,1fr) 36px 52px;gap:6px} #calendarTools input{min-width:0} #calendarTools button{padding:10px 4px;white-space:nowrap}
     [hidden]{display:none!important}
@@ -287,26 +298,28 @@
     </section>
 
     <section id="plan" class="view">
-      <div class="eyebrow">Training plan</div><div class="screen-title">月历与长期计划</div><p id="planStage" class="muted">正在读取计划…</p>
-      <div class="card form-card">
-        <div class="section-head"><h2>月历</h2><span class="muted">点日期查看详情</span></div>
+      <h1 class="screen-title">训练计划</h1>
+      <div id="quickPlanRoot"></div>
+      <details id="planCalendarDetails" class="card plan-details">
+        <summary>查看月历</summary>
         <div id="calendarTools" class="toolbar"><button class="secondary" data-calendar="prev" aria-label="上一月">‹</button><input id="calendarMonth" type="month" aria-label="选择月份" class="text-input"><button class="secondary" data-calendar="next" aria-label="下一月">›</button><button class="ghost" data-calendar="today">今天</button></div>
         <div id="scheduleCalendar" class="calendar-grid"></div>
-      </div>
-      <div id="longPlanRoot"></div>
-      <div class="card"><h2 id="stageTitle">这一阶段练什么</h2><p id="stageDescription" class="muted" style="line-height:1.6"></p><div id="planEngineNote" class="engine-note"></div></div>
-      <div class="section">
-        <div class="section-head"><h2>训练方案</h2><span class="muted">独立模块 · 自由组合</span></div>
+        <div id="planDateRoot"></div>
+      </details>
+      <details id="planAdvancedDetails" class="card plan-details">
+        <summary>更多计划选项</summary>
+        <div id="longPlanRoot"></div>
+      </details>
+      <details id="planProgramsDetails" class="card plan-details">
+        <summary>训练方案与自定义组合</summary>
         <div id="programList"></div>
-      </div>
-      <div class="section">
         <div id="customTraining" class="section-head" tabindex="-1"><h2>自定义训练</h2></div>
         <div class="card">
           <input id="customProgramName" class="text-input" value="我的训练" maxlength="24" aria-label="训练方案名称">
           <div class="mini-actions"><button id="copyBasicProgram" class="secondary">复制基础方案</button><button id="clearBuilder" class="secondary">从空白创建</button></div><div id="builderModules" style="margin-top:10px"></div>
           <div class="mini-actions"><button id="runCustomProgram" class="primary">练一次</button><button id="saveCustomProgram" class="secondary">保存为我的方案</button></div>
         </div>
-      </div>
+      </details>
     </section>
 
     <section id="insights" class="view">
@@ -493,6 +506,7 @@
 <div id="privacyCover"><h1>已遮屏</h1><p class="muted">训练已暂停，返回后由你继续。</p><button id="hidePrivacy" class="primary">返回</button></div>
 <dialog id="backupDialog"><form id="backupForm"><h2>完整备份</h2><label>导出方式<select id="backupMode" class="text-input"><option value="encrypted">密码加密（默认）</option><option value="plain">明文完整备份</option></select></label><label>密码<input id="backupPassword" class="text-input" type="password" autocomplete="new-password"></label><label>再次输入密码<input id="backupPasswordAgain" class="text-input" type="password" autocomplete="new-password"></label><p class="small">至少12个字符。密码丢失无法恢复；密码只在本次操作内使用。</p><p id="backupError" role="alert"></p><button class="primary" type="submit">生成备份</button><button id="closeBackup" class="ghost" type="button">取消</button></form></dialog>
 <dialog id="restoreDialog"><form id="restoreForm"><h2>恢复备份</h2><p id="restoreSummary"></p><label id="restorePasswordLabel">解密密码<input id="restorePassword" type="password" class="text-input" autocomplete="off"></label><label>导入方式<select id="restoreMode" class="text-input"><option value="merge">合并：冲突时保留本机</option><option value="replace">替换：使用备份数据</option></select></label><p id="restoreError" role="alert"></p><button class="primary" type="submit" id="restoreSubmit">校验并预览</button><button id="closeRestore" class="ghost" type="button">取消</button></form></dialog>
+<dialog id="planDialog" aria-labelledby="planDialogTitle"></dialog>
 <dialog id="evidenceDialog"><h2>方法依据与局限</h2><div id="evidenceBody"></div><button id="closeEvidence" class="secondary">关闭</button></dialog>
 <dialog id="rehearsalDialog"><h2>操作演练</h2><p id="rehearsalHint" aria-live="polite"></p><strong id="rehearsalLevel">2</strong><div class="live-controls"><button id="demoDown" class="secondary">－</button><button id="demoUp" class="secondary">＋</button><button id="demoStop" class="secondary">停止刺激</button><button id="demoResume" class="secondary">继续练习</button><button id="demoPause" class="secondary">暂停／继续</button><button id="demoMarker" class="secondary">标记</button></div><p class="small">演练不会创建训练记录或进入真实统计。</p><button id="closeRehearsal" class="primary">关闭演示</button></dialog>
 <button id="applyUpdate" class="secondary" hidden style="position:fixed;bottom:100px;z-index:95;max-width:400px;left:50%;transform:translateX(-50%)">新版本已就绪，训练结束后更新</button>

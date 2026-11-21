@@ -21,6 +21,24 @@ const P=LongPlans,T=TrainingCore,B=TrainingBackup;
   assert.ok(plan.tasks.filter(t=>t.weekIndex===1&&t.status==='PLANNED').every(t=>t.date>=P.dateKey()));
   const eight=P.instantiate(P.makeTemplate(8),'2026-10-01');assert.equal(P.nextPhaseWeek(eight),2);assert.equal(P.phaseDue(eight,'2026-10-14'),false);assert.equal(P.phaseDue(eight,'2026-10-15'),true);assert.equal(P.effectiveWeek(eight,eight.tasks[2]),eight.templateSnapshot.weeks[1]);
   const rest=P.makeTemplate(1);rest.weeks[0].days=[];assert.equal(P.instantiate(rest,'2026-10-03').tasks.length,0);
+  const weekly=P.instantiate(P.weeklyTemplate(TrainingContent.basicProgram,'2026-12-30',[2,5],4),'2026-12-30');
+  assert.equal(weekly.tasks.length,8);
+  assert.deepEqual(weekly.tasks.slice(0,2).map(task=>task.date),['2027-01-01','2027-01-05']);
+  const [done,moved,partial,running,edited]=weekly.tasks;
+  done.status='COMPLETED';done.completedSessionId='finished';
+  moved.date='2027-01-07';
+  partial.lastPartialSessionId='partial';
+  edited.userEdited=true;
+  const revised=P.weeklyAdjustment(weekly,[3,6],'2027-01-02',id=>id===running.id);
+  for(const task of [done,moved,partial,running,edited]){
+    assert.deepEqual(revised.tasks.find(item=>item.id===task.id),task);
+  }
+  assert.ok(revised.added.length>0);
+  assert.ok(revised.added.every(task=>task.planId===weekly.id&&[3,6].includes(P.weekday(task.date))));
+  const amended={...weekly,templateSnapshot:revised.template,tasks:revised.tasks};
+  B.validate({format:'ec-training-backup',version:3,sessions:[],meta:{longPlans:[amended]}});
+  const sameDays=P.weeklyAdjustment(amended,[3,6],'2027-01-02',id=>id===running.id);
+  assert.equal(sameDays.added.length+sameDays.removed.length,0);
   const session={id:'test',activeAccumulatedMs:1000,activeStartedAt:1000,pausedAt:null};assert.equal(T.elapsed(session,3000),3000);
   const cp=T.checkpoint(session,3000);assert.equal(cp.activeStartedAt,null);assert.equal(cp.activeAccumulatedMs,3000);assert.equal(T.elapsed(T.recover(cp),900000),3000);
   assert.equal(T.median([1,3,5,7]),4);assert.equal(T.median([null,4]),4);assert.equal(T.median([]),null);

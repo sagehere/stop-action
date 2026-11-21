@@ -208,16 +208,28 @@
     });
   }
 
-  function importData(sessions, meta, replace = false) {
+  function importData(sessions, meta, replace = false, planWrite = null) {
     const rows = structuredClone(sessions), values = structuredClone(meta);
     return enqueueWrite(async () => {
       const tx = db.transaction([SESSION_STORE, KV_STORE], 'readwrite');
       const done = transactionDone(tx), store = tx.objectStore(SESSION_STORE), kv = tx.objectStore(KV_STORE);
       try {
+        if (planWrite) {
+          const entries = Object.entries(planWrite.expected);
+          const [pending, ...saved] = await Promise.all(
+            ['currentSession', ...entries.map(([key]) => key)].map(key => requestToPromise(kv.get(key)))
+          );
+          if (entries.some(([, value], index) => JSON.stringify(saved[index]?.value ?? (Array.isArray(value) ? [] : null)) !== JSON.stringify(value))) {
+            throw new Error('安排已在其他页面更新，请查看当前安排后再试');
+          }
+          if (pending?.value && pending.value.id !== planWrite.sessionId) {
+            throw new Error('另一个页面有未结束的训练，请结束后再调整安排');
+          }
+        }
         if (replace) { store.clear(); kv.clear(); }
         rows.forEach(row => store.put(row));
         Object.entries(values).forEach(([key, value]) => kv.put({ key, value, updatedAt: Date.now() }));
-      } catch (error) { tx.abort(); await done.catch(() => {}); throw error; }
+      } catch (error) { try { tx.abort(); } catch {} await done.catch(() => {}); throw error; }
       await done;
     });
   }

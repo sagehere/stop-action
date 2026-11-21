@@ -10,7 +10,7 @@
   const DEFAULT_STOP_THRESHOLD = 7;
   const DEFAULT_RESUME_THRESHOLD = 5;
   const DAY_MS = 86400000;
-  const APP_VERSION = '2.1.0';
+  const APP_VERSION = '2.2.0';
   const Core = window.TrainingCore, Content = window.TrainingContent, Long = window.LongPlanUI, Backup = window.TrainingBackup;
   let acceptedParameters={stopThreshold:7,resumeThreshold:5},parameterHistory=[],saveInFlight=false,guideLastElapsed=0,checkpointTimer=null,wakeLock=null,waitingWorker=null,moduleActionReadyAt=0;
   let pendingRestore=null,restorePreview=null,updateRequested=false,insightFilter={plan:'',stage:'',program:'',mode:'',clock:'2',from:'',to:''};
@@ -1623,13 +1623,8 @@
   }
 
   function renderPlan() {
-    const s=stage();
-    $('#planStage').textContent=`${Long.active()?'主计划':'自由安排'} · ${s.name}`;
-    $('#stageTitle').textContent=`这一阶段：${s.name}`; $('#stageDescription').textContent=s.focus;
-    $('#planEngineNote').innerHTML='<span>◌</span><span>训练内容已经拆成独立 Exercise。日历只负责“哪天做哪个方案”；你可以拖动 ≡ 到其他日期，也可以把自定义方案安排到任意日期。</span>';
-    renderScheduleCalendar(); Long.render(); renderPrograms(); renderBuilder();
+    Long.render(); renderPrograms(); renderBuilder();
   }
-  function renderScheduleCalendar() { Long.renderCalendar(); }
 
   function programCard(program) {
     const modules=program.modules.map(m=>`<span class="pill">${escapeHtml(moduleLabel(m))}</span>`).join('');
@@ -1676,10 +1671,8 @@
     renderPrograms();
     showToast('已保存自定义方案');
   }
-  async function scheduleProgram(programId) {
-    const date=prompt('安排日期（YYYY-MM-DD，可跨月）',dateKey());
-    if(!date)return;
-    try{await Long.addTask(programById(programId),date);showToast('已加入日历');}catch(error){showToast(error.message);}
+  function scheduleProgram(programId) {
+    Long.openPlanForm('once',{program:programById(programId)});
   }
 
   async function deleteProgram(id) {
@@ -2020,7 +2013,11 @@
   }
 
   async function deferToTomorrow() { await Long.defer();refreshDashboard();renderPlan(); }
-  async function restoreSchedule() { navTo('plan');showToast('在主计划中选择“从今天重新安排”，预览后确认。'); }
+  function restoreSchedule() {
+    navTo('plan');
+    const details=$('#planAdvancedDetails');
+    details.open=true;details.scrollIntoView({block:'start'});
+  }
 
   function bindUI() {
     $$('[data-nav]').forEach(b=>b.addEventListener('click',()=>navTo(b.dataset.nav)));
@@ -2061,6 +2058,7 @@
     });
     $('#openCustomTraining').addEventListener('click', () => {
       navTo('plan');
+      $('#planProgramsDetails').open=true;
       $('#customTraining').focus({preventScroll:true});
       $('#customTraining').scrollIntoView({block:'start'});
     });
@@ -2206,7 +2204,7 @@
       plan=await DB.getMeta('plan',null); if(!plan){plan=defaultPlan();await DB.setMeta('plan',plan);} if(!plan.version||plan.version<2)plan.version=2;
       await ensureSchedule();
       acceptedParameters=await DB.getMeta('acceptedParameters',{stopThreshold:7,resumeThreshold:5});parameterHistory=await DB.getMeta('parameterHistory',[]);
-      await Long.init({db:DB,legacyPlan:()=>plan,programs:allPrograms,sessions:()=>sessionCache,exerciseName:key=>EXERCISES[key].name,toast:showToast,download:downloadBlob,changed:()=>refreshDashboard(),isTraining:()=>!!currentSession&&currentSession.phase!=='COMPLETED',isTaskRunning:id=>!!id&&currentSession?.scheduleItemId===id&&currentSession.phase!=='COMPLETED',viewSession:renderHistoryDetail,launch:(program,task)=>launchProgram(program.id,task.id)});
+      await Long.init({db:DB,legacyPlan:()=>plan,programs:allPrograms,sessions:()=>sessionCache,exerciseName:key=>EXERCISES[key].name,toast:showToast,download:downloadBlob,changed:()=>refreshDashboard(),isTraining:()=>!!currentSession&&currentSession.phase!=='COMPLETED',runningSessionId:()=>currentSession?.phase!=='COMPLETED'?currentSession?.id:null,isTaskRunning:id=>!!id&&currentSession?.scheduleItemId===id&&currentSession.phase!=='COMPLETED',viewSession:renderHistoryDetail,launch:(program,task)=>launchProgram(program.id,task.id)});
       adaptiveDecision=adaptiveEngine(sessionCache); await DB.setMeta('adaptiveDecision',adaptiveDecision);
       await ensureAdaptiveHistory();
       await maybeAdvancePlan();
@@ -2358,14 +2356,11 @@
     on('clearBuilder',()=>{resetBuilderState();$('#customProgramName').value='我的训练';renderBuilder();});
     on('runCustomProgram',()=>launchProgram(draftProgram()));
     on('saveCustomProgram',saveCustomProgram);
-    on('scheduleNextTraining',async()=>{
-      const program = currentSession?.programSnapshot;
-      if (!program) return;
-      const date = prompt('安排日期（YYYY-MM-DD）',LongPlans.addDays(dateKey(),1));
-      if (!date) return;
-      await Long.addTask(program,date);
+    on('scheduleNextTraining',()=>{
+      const program=currentSession?.programSnapshot;
+      if(!program)return;
       navTo('plan');
-      showToast('已安排下次训练');
+      Long.openPlanForm('once',{program,date:LongPlans.addDays(dateKey(),1)});
     });
     on('levelDown',()=>changeArousal(-1));on('levelUp',()=>changeArousal(1));on('explicitStop',()=>confirmStop(true));on('explicitResume',resumeCycle);on('explicitMarker',openQuickMarker);on('explicitFinish',finishSession);
     on('endCheckin',finishSession);
