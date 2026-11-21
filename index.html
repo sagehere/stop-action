@@ -64,6 +64,16 @@
     .nav button.active{color:var(--text);background:var(--panel2)}
     .screen-title{font-size:28px;margin:8px 0 4px}
     .form-card{margin-top:16px}
+    .training-preparation{margin-top:14px}
+    .training-preparation h2{margin-bottom:8px}
+    .training-preparation dl{margin:0}
+    .training-preparation dl > div + div{margin-top:8px}
+    .training-preparation dt{font-weight:700}
+    .training-preparation dd{margin:2px 0 0;color:var(--muted)}
+    .training-preparation p,.training-preparation dd{font-size:14px;line-height:1.55}
+    .training-preparation p{margin-top:8px}
+    .training-preparation summary{cursor:pointer;min-height:40px;align-content:center}
+    .training-preparation .source-links{display:flex;flex-wrap:wrap;gap:4px 12px}
     .field{padding:15px 0;border-bottom:1px solid var(--line)}
     .field:last-child{border-bottom:0}
     .field-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
@@ -395,7 +405,18 @@
     </section>
 
     <section id="checkin" class="view">
-      <div id="checkinProgramName" class="screen-title">动停法基础跟练</div><p id="checkinGoal" class="muted"></p><p id="basicSourceLink" class="small" hidden><a href="https://www.sexualhealth.cnwl.nhs.uk/media/pcfn4iip/problems-controlling-when-you-come.pdf" target="_blank" rel="noopener noreferrer">跟练依据 · NHS 动停法手册</a></p>
+      <div id="checkinProgramName" class="screen-title">动停法基础跟练</div><p id="checkinGoal" class="muted"></p>
+      <section class="card training-preparation" aria-labelledby="preparationTitle">
+        <h2 id="preparationTitle">开始前准备</h2>
+        <dl id="preparationItems"></dl>
+        <p id="preparationTiming" class="small" hidden></p>
+        <p id="preparationComfort" class="small"></p>
+        <details id="preparationDetails">
+          <summary>伴侣、用品与参考来源</summary>
+          <p id="preparationPartner" class="small"></p>
+          <p id="preparationSources" class="source-links"></p>
+        </details>
+      </section>
       <details id="checkinOptions" class="card form-card"><summary>训练前状态与记录选项</summary>
         <label id="trackingModeOption"><input id="detailedTracking" type="checkbox"> 精细记录 0–9 兴奋度</label>
         <div class="field"><div class="field-head"><strong>压力</strong><span id="stressV">未填</span></div><input id="stress" type="range" min="0" max="10" value="4"></div>
@@ -403,7 +424,7 @@
         <div class="field"><div class="field-head"><strong>盆底紧张</strong><span id="tensionV">未填</span></div><input id="tension" type="range" min="0" max="10" value="3"></div>
         <div class="field"><div class="field-head"><strong>有疼痛或明显不适吗？</strong></div><div class="toggle-row"><button class="choice selected" data-pain="false">否</button><button class="choice" data-pain="true">是</button></div><div id="painNotice" class="notice">如果存在明显或持续疼痛，建议暂停本次训练并考虑专业评估。</div></div>
       </details>
-      <div style="height:14px"></div><button id="continueCheckin" class="primary">开始</button><button id="openRehearsal" class="ghost">操作演示</button><div style="height:10px"></div><button id="endCheckin" class="secondary">结束并记录当前状态</button><button id="cancelCheckin" class="ghost">取消本次</button>
+      <div style="height:14px"></div><button id="continueCheckin" class="primary">开始训练</button><button id="openRehearsal" class="ghost">操作演示（无需刺激）</button><div style="height:10px"></div><button id="endCheckin" class="secondary">结束并记录当前状态</button><button id="cancelCheckin" class="ghost">取消本次</button>
     </section>
 
     <section id="moduleGuide" class="view full">
