@@ -10,7 +10,7 @@
   const DEFAULT_STOP_THRESHOLD = 7;
   const DEFAULT_RESUME_THRESHOLD = 5;
   const DAY_MS = 86400000;
-  const APP_VERSION = '2.0.0';
+  const APP_VERSION = '2.1.0';
   const Core = window.TrainingCore, Content = window.TrainingContent, Long = window.LongPlanUI, Backup = window.TrainingBackup;
   let acceptedParameters={stopThreshold:7,resumeThreshold:5},parameterHistory=[],saveInFlight=false,guideLastElapsed=0,checkpointTimer=null,wakeLock=null,waitingWorker=null,moduleActionReadyAt=0;
   let pendingRestore=null,restorePreview=null,updateRequested=false,insightFilter={plan:'',stage:'',program:'',mode:'',clock:'2',from:'',to:''};
@@ -77,7 +77,6 @@
   let builderState = [];
   let pain = false;
   let currentSession = null;
-  let pendingLaunch = null;
   let sessionTimer = null;
   let guidedTimer = null;
   let touchStart = null;
@@ -242,6 +241,7 @@
   function builtInPrograms() {
     const cycles = stage().cycles;
     return [
+      Content.basicProgram,
       {
         id: 'standard', name: '标准训练', description: '呼吸 → 动停 → 盆底释放', builtin: true,
         modules: [
@@ -293,19 +293,8 @@
     if (exerciseId === 'pelvic_release' && legacy.some(x => String(x).includes('盆底'))) return true;
     return false;
   }
-  function sessionHasCategory(session, category) {
-    const modules = session.programSnapshot?.modules || [];
-    if (modules.some(m => EXERCISES[m.exerciseId]?.category === category)) return true;
-    if (!modules.length) {
-      if (category === 'stop') return hasExercise(session, 'stop_start');
-      if (category === 'mindfulness') return hasExercise(session, 'breathing');
-      if (category === 'pelvic') return hasExercise(session, 'pelvic_release');
-    }
-    return false;
-  }
-
   function persistCurrentSoon() {
-    if (!currentSession || currentSession.phase==='COMPLETED') return Promise.resolve();
+    if (!currentSession || currentSession.phase==='COMPLETED' || navigator.locks && !releaseTrainingLock) return Promise.resolve();
     if(currentSession.phase==='MODULE_ACTIVE'&&!currentSession.pausedAt)updateGuidedClock();
     const snapshot=Core.checkpoint(currentSession);
     $('#saveStatus').textContent='正在保存';
@@ -329,7 +318,7 @@
     if (!currentSession) return;
     const module = currentSession.programSnapshot?.modules?.[currentSession.moduleIndex] || null;
     currentSession.events.push({
-      type, at: now(), elapsedMs: activeElapsed(), arousal: currentSession.arousal,
+      type, at: now(), elapsedMs: activeElapsed(), arousal: isSimple() ? null : currentSession.arousal,
       cycle: currentSession.cycleIndex + 1, moduleIndex: currentSession.moduleIndex,
       exerciseId: module?.exerciseId || null, ...data
     });
@@ -337,7 +326,7 @@
   }
 
   function analysisSessions() {
-    return sessionCache.filter(s => (!s.simulated || settings.includeSimulatedData)&&!s.rehearsal&&(!insightFilter.plan||s.longPlanId===insightFilter.plan)&&(!insightFilter.stage||s.planSnapshot?.stageName===insightFilter.stage)&&(!insightFilter.program||s.programSnapshot?.name===insightFilter.program)&&(!insightFilter.mode||s.promptModeSnapshot===insightFilter.mode)&&(!insightFilter.clock||String(s.clockVersion||1)===insightFilter.clock)&&(!insightFilter.from||dateKey(new Date(sessionTimestamp(s)))>=insightFilter.from)&&(!insightFilter.to||dateKey(new Date(sessionTimestamp(s)))<=insightFilter.to));
+    return sessionCache.filter(s => (!s.simulated || settings.includeSimulatedData)&&!s.rehearsal&&(!insightFilter.plan||s.longPlanId===insightFilter.plan)&&(!insightFilter.stage||s.planSnapshot?.stageName===insightFilter.stage)&&(!insightFilter.program||s.programSnapshot?.name===insightFilter.program)&&(!insightFilter.tracking||(s.trackingMode||'detailed')===insightFilter.tracking)&&(!insightFilter.mode||s.promptModeSnapshot===insightFilter.mode)&&(!insightFilter.clock||String(s.clockVersion||1)===insightFilter.clock)&&(!insightFilter.from||dateKey(new Date(sessionTimestamp(s)))>=insightFilter.from)&&(!insightFilter.to||dateKey(new Date(sessionTimestamp(s)))<=insightFilter.to));
   }
   function activeRevisions(s) {
     const revisions = Array.isArray(s.revisions) ? s.revisions : [];
@@ -362,21 +351,28 @@
     const events = Array.isArray(s.events) ? s.events : [];
     let score = 100;
     if (!s.endedAt) { issues.push('Session 未正常结束'); score -= 35; }
-    if (!s.review) { issues.push('缺少训练后复盘'); score -= 15; }
-    if (!s.checkin) { issues.push('缺少训练前 Check-in'); score -= 10; }
+    if (!s.review && !s.trackingMode) { issues.push('缺少训练后复盘'); score -= 15; }
+    if (!s.checkin && !s.trackingMode) { issues.push('缺少训练前 Check-in'); score -= 10; }
     if (stopSession) {
       const stopEvents = events.filter(e => e.type === 'STOP_STARTED');
       const arousalEvents = events.filter(e => e.type === 'AROUSAL_LEVEL_CHANGED');
       if (!cycles.length) { issues.push('没有完整 Control Cycle'); score -= 35; }
       if (stopEvents.length && Math.abs(stopEvents.length - rawCycles.length) > 1) { issues.push('Stop 事件与 Cycle 数量不一致'); score -= 18; }
-      const artMissing = cycles.filter(c => !Number.isFinite(c.artMs) || c.artMs <= 0).length;
-      if (artMissing) { issues.push(`${artMissing} 个 Cycle 缺少有效 ART`); score -= Math.min(30, artMissing * 10); }
-      const artOdd = cycles.filter(c => Number.isFinite(c.artMs) && (c.artMs < 3000 || c.artMs > 300000)).length;
-      if (artOdd) { issues.push(`${artOdd} 个 ART 值明显异常`); score -= Math.min(20, artOdd * 8); }
-      const missingLevel = cycles.filter(c => !Number.isFinite(c.stopLevel) || !Number.isFinite(c.resumeLevel)).length;
-      if (missingLevel) { issues.push(`${missingLevel} 个 Cycle 缺少 Stop/Resume Level`); score -= Math.min(24, missingLevel * 8); }
-      const expectedArousal = Math.max(4, cycles.length * 3);
-      if (arousalEvents.length < expectedArousal) { issues.push('兴奋度记录较稀疏'); score -= 15; }
+      if (isSimple(s)) {
+        if (cycles.some(c=>!Number.isFinite(c.manualRecoveryMs))) {
+          issues.push('缺少手动继续用时');
+          score -= 20;
+        }
+      } else {
+        const artMissing = cycles.filter(c => !Number.isFinite(c.artMs) || c.artMs <= 0).length;
+        if (artMissing) { issues.push(`${artMissing} 个 Cycle 缺少有效 ART`); score -= Math.min(30, artMissing * 10); }
+        const artOdd = cycles.filter(c => Number.isFinite(c.artMs) && (c.artMs < 3000 || c.artMs > 300000)).length;
+        if (artOdd) { issues.push(`${artOdd} 个 ART 值明显异常`); score -= Math.min(20, artOdd * 8); }
+        const missingLevel = cycles.filter(c => !Number.isFinite(c.stopLevel) || !Number.isFinite(c.resumeLevel)).length;
+        if (missingLevel) { issues.push(`${missingLevel} 个 Cycle 缺少 Stop/Resume Level`); score -= Math.min(24, missingLevel * 8); }
+        const expectedArousal = Math.max(4, cycles.length * 3);
+        if (arousalEvents.length < expectedArousal) { issues.push('兴奋度记录较稀疏'); score -= 15; }
+      }
       if (!events.some(e => e.type === 'MODULE_STARTED' && e.exerciseId === 'stop_start')) { issues.push('缺少动停模块起始事件'); score -= 6; }
     } else if (!(s.moduleResults || []).length) {
       issues.push('缺少模块完成记录'); score -= 15;
@@ -399,7 +395,8 @@
 
   function computeMetrics(s) {
     const cycles = effectiveCycles(s);
-    const arts = cycles.map(c => c.artMs).filter(Number.isFinite);
+    const arts = isSimple(s) ? [] : cycles.map(c => c.artMs).filter(Number.isFinite);
+    const manualTimes = isSimple(s) ? cycles.map(c => c.manualRecoveryMs).filter(Number.isFinite) : [];
     const stopCount = (s.events || []).filter(e => e.type === 'STOP_STARTED').length;
     const overshootCycles = new Set((s.events || []).filter(e => e.type === 'OVERSHOOT').map(e => `${e.moduleIndex ?? 0}:${e.cycle}`)).size;
     const overshoot = overshootCycles || Number(s.overshootCount || 0);
@@ -409,15 +406,16 @@
       csr: stopCount ? cycles.length / stopCount : null,
       meanART: average(arts),
       medianART: Core.median(arts),
+      meanManualRecovery: average(manualTimes),
       overshoot,
-      overshootRate: stopCount ? Math.min(1, overshoot / stopCount) : null,
+      overshootRate: stopCount && !isSimple(s) ? Math.min(1, overshoot / stopCount) : null,
       control: s.review?.control ?? null,
       pelvicTension: s.checkin?.pelvicTension ?? null,
       stress: s.checkin?.stress ?? null,
       fatigue: s.checkin?.fatigue ?? null,
       difficulty: s.review?.difficulty ?? null,
       awareness: s.review?.awareness ?? null,
-      meanStopLevel: average(cycles.map(c => c.stopLevel).filter(Number.isFinite)),
+      meanStopLevel: isSimple(s) ? null : average(cycles.map(c => c.stopLevel).filter(Number.isFinite)),
       activeMinutes: Number.isFinite(s.activeAccumulatedMs) ? s.activeAccumulatedMs / 60000 : null
     };
   }
@@ -433,26 +431,6 @@
     const offset = (d.getDay() + 6) % 7;
     d.setDate(d.getDate() - offset);
     return dateKey(d);
-  }
-  function weeklySeries() {
-    const groups = new Map();
-    analysisSessions().filter(s => s.endedAt && hasExercise(s,'stop_start') && dataQuality(s).usableForTrend).forEach(s => {
-      const key = weekStartKey(sessionTimestamp(s));
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(s);
-    });
-    const observed=[...groups.keys()].sort();if(!observed.length)return [];
-    const end=observed.at(-1)>weekStartKey(now())?observed.at(-1):weekStartKey(now()),first=observed[0],weeks=Math.min(52,Math.floor(LongPlans.dayDistance(first,end)/7)+1);
-    return Array.from({length:weeks},(_,index)=>{const key=LongPlans.addDays(end,-7*(weeks-1-index));return [key,groups.get(key)||[]];}).map(([key, sessions]) => {
-      const metrics=sessions.map(computeMetrics);
-      return {
-        key, label:key.slice(5), count:sessions.length,
-        art: average(metrics.map(m => Number.isFinite(m.meanART) ? m.meanART/1000 : null)),
-        stop: average(metrics.map(m => m.meanStopLevel)),
-        overshoot: average(metrics.map(m => Number.isFinite(m.overshootRate) ? m.overshootRate*100 : null)),
-        control: average(metrics.map(m => m.control))
-      };
-    });
   }
   function renderLineChart(svg, rows, key, options = {}) {
     if (!svg) return;
@@ -540,7 +518,7 @@
         stopThreshold: 6, resumeThreshold: 4, applied: false
       };
     }
-    let stopSessions = completed.filter(s => hasExercise(s, 'stop_start') && dataQuality(s).usableForTrend&&(options.allowSimulated||s.clockVersion===2));
+    let stopSessions = completed.filter(s => !isSimple(s) && hasExercise(s, 'stop_start') && dataQuality(s).usableForTrend&&(options.allowSimulated||s.clockVersion===2));
     const condition=stopSessions.at(-1);if(condition)stopSessions=stopSessions.filter(s=>Core.conditionKey(s)===Core.conditionKey(condition));
     if (!stopSessions.length) {
       return {
@@ -843,8 +821,8 @@
   function externalCoachConfigured() {
     return !!(settings.externalCoachEnabled && settings.externalCoachConsent && validateExternalCoachEndpoint(settings.externalCoachEndpoint));
   }
-  function configureExternalCoachForTest(endpoint='https://relay.example.com/coach', token='test-token') {
-    settings.externalCoachEnabled=true; settings.externalCoachConsent=true; settings.externalCoachEndpoint=endpoint; settings.externalCoachModel='test-model'; settings.coachChatMode='external'; externalCoachToken=token;
+  function configureExternalCoachForTest(endpoint='https://relay.example.com/coach', token='test-token', model='test-model') {
+    settings.externalCoachEnabled=true; settings.externalCoachConsent=true; settings.externalCoachEndpoint=endpoint; settings.externalCoachModel=model; settings.coachChatMode='external'; externalCoachToken=token;
   }
   function coachChatRequest(question) {
     const turns=coachChatMessages.slice(-9,-1).map(m=>({role:m.role,text:String(m.text||'').slice(0,1600)}));
@@ -858,15 +836,20 @@
       responseFormat:{schema:'coach-chat-response-v1',allowedFields:COACH_CHAT_ALLOWED_FIELDS}
     };
   }
-  async function callExternalCoach(question) {
+  async function callExternalCoach(question, review = null) {
     const endpoint=validateExternalCoachEndpoint(settings.externalCoachEndpoint);
     if(!externalCoachConfigured()||!endpoint)throw new Error('外部 Coach 尚未完成配置与授权。');
     const controller=new AbortController();
     const timer=setTimeout(()=>controller.abort(),20000);
     const headers={'Content-Type':'application/json','Accept':'application/json'};
     if(externalCoachToken)headers.Authorization=`Bearer ${externalCoachToken}`;
+    const request = coachChatRequest(question);
+    if (review) {
+      request.conversation = [];
+      request.context = {schema:'coach-context-v1',privacy:request.context.privacy,review};
+    }
     let response;
-    try { response=await fetch(endpoint,{method:'POST',headers,body:JSON.stringify(coachChatRequest(question)),signal:controller.signal}); }
+    try { response=await fetch(endpoint,{method:'POST',headers,body:JSON.stringify(request),signal:controller.signal}); }
     finally { clearTimeout(timer); }
     if(!response.ok)throw new Error(`Relay 返回 HTTP ${response.status}`);
     let data; try{data=await response.json();}catch(_){throw new Error('Relay 没有返回有效 JSON');}
@@ -957,13 +940,20 @@
     return sessionCache.filter(s=>!s.simulated&&!s.rehearsal&&s.review&&weekStartKey(sessionTimestamp(s))===key);
   }
 
-  function weeklyProgress() {
-    const sessions = sessionsInCurrentPlanWeek();
-    const s = stage();
+  function weeklyPlanStats() {
+    const week = weekStartKey(now()), active = Long.active();
+    const tasks = (active?.tasks || []).filter(task=>
+      task.status !== 'CANCELLED' && weekStartKey(LongPlans.parseDate(task.date).getTime()) === week);
+    const categories = Object.fromEntries(['stop','mindfulness','pelvic'].map(category=>{
+      const matching = tasks.filter(task=>Long.taskProgram(task).modules.some(module=>EXERCISES[module.exerciseId]?.category===category));
+      return [category,{target:matching.length,done:matching.filter(task=>task.status==='COMPLETED').length}];
+    }));
     return {
-      stop: { done: sessions.filter(x => sessionHasCategory(x, 'stop')).length, target: s.sessions },
-      mind: { done: sessions.filter(x => sessionHasCategory(x, 'mindfulness')).length, target: s.mindfulness },
-      pelvic: { done: sessions.filter(x => sessionHasCategory(x, 'pelvic')).length, target: s.pelvic }
+      active, tasks, categories,
+      done:tasks.filter(task=>task.status==='COMPLETED').length,
+      partial:tasks.filter(task=>task.status==='PLANNED' && task.lastPartialSessionId).length,
+      skipped:tasks.filter(task=>task.status==='SKIPPED').length,
+      free:sessionsInCurrentPlanWeek().filter(session=>!session.longPlanId || Long.meta().longPlans.some(plan=>plan.id===session.longPlanId && plan.free)).length
     };
   }
   function recommendedDates(target) {
@@ -992,6 +982,7 @@
   function programSnapshot(program) {
     return {
       id: program.id, name: program.name, description: program.description || '',
+      trackingMode: program.trackingMode || 'detailed',
       modules: program.modules.map(m => ({ ...m }))
     };
   }
@@ -1001,7 +992,7 @@
     currentSession = {
       schemaVersion: 5, clockVersion:2, contentVersion:Content.version, guidanceSnapshot:structuredClone(Content.modules), id: 'S-' + crypto.randomUUID(), createdAt: now(), startedAt: null, endedAt: null,
       activeStartedAt: null, activeAccumulatedMs: 0, pausedAt: null, pausedFrom: null,
-      phase: 'CHECK_IN', arousal: 2, cycleIndex: 0, cycles: [], currentCycle: null,
+      phase: 'CHECK_IN', trackingMode: program.trackingMode || 'detailed', arousal: 2, cycleIndex: 0, cycles: [], currentCycle: null,
       events: [], revisions: [], review: null, checkin: null, overshootCount: 0,
       stopThreshold, resumeThreshold, targetCycles: 0, moduleIndex: 0, moduleResults: [],
       guidedState: null, stopStartBaseCycles: 0, scheduleItemId,
@@ -1010,23 +1001,124 @@
       programSnapshot: programSnapshot(program),
       modules: program.modules.map(moduleLabel)
     };
-    persistCurrentSoon();
     updateReady();
   }
 
-  function launchProgram(programId, scheduleItemId = null) {
-    if(currentSession&&currentSession.phase!=='COMPLETED'){showToast('请先完成或结束当前训练');return;}
-    moduleActionReadyAt=0;
-    const task=Long.tasks().find(t=>t.id===scheduleItemId);
-    const program = task?Long.taskProgram(task):programById(programId);
-    pendingLaunch = { programId: program.id, scheduleItemId };
-    newSession(program, scheduleItemId);
-    if(task){currentSession.longPlanId=task.planId;const instance=Long.meta().longPlans.find(p=>p.id===task.planId);currentSession.guidanceSnapshot=structuredClone(instance?.templateSnapshot.contentSnapshot||Content.modules);currentSession.contentVersion=instance?.templateSnapshot.contentVersion||Content.version;currentSession.planSnapshot={week:task.weekIndex,stageName:Long.stage(task)?.name||stage().name,adaptiveType:adaptiveDecision?.type||'NONE'};}
-    pain=false;$$('[data-pain]').forEach(b=>b.classList.toggle('selected',b.dataset.pain==='false'));$('#painNotice').style.display='none';
-    ['difficulty','signals','awareness'].forEach(id=>$$(`#${id} .chip`).forEach(c=>c.classList.remove('selected')));$('#control').value=6;$('#controlV').textContent='6 / 10';$('#relax').value=5;$('#relaxV').textContent='5 / 10';
-    persistCurrentSoon();
-    recordBetaEvent('SESSION_LAUNCHED', { programType: programId === 'standard' ? 'standard' : (programId === 'mindfulness' ? 'mindfulness' : 'custom_or_other') });
-    show('checkin');
+  let releaseTrainingLock = null;
+  let acquiringTrainingLock = false;
+  let launchInFlight = false;
+
+  async function claimTraining() {
+    if (releaseTrainingLock) return true;
+    if (acquiringTrainingLock) return false;
+    if (!navigator.locks) return true;
+    acquiringTrainingLock = true;
+    try {
+      const acquired = await new Promise((resolve, reject) => {
+        navigator.locks.request('stop-action-training', {ifAvailable:true}, lock => {
+          if (!lock) { resolve(false); return; }
+          return new Promise(release => {
+            releaseTrainingLock = release;
+            resolve(true);
+          });
+        }).catch(reject);
+      });
+      if (!acquired) showToast('另一个页面正在训练，请回到原页面继续');
+      return acquired;
+    } finally { acquiringTrainingLock = false; }
+  }
+
+  function releaseTraining() {
+    releaseTrainingLock?.();
+    releaseTrainingLock = null;
+  }
+
+  async function claimPendingTraining() {
+    if (releaseTrainingLock) return true;
+    if (!await claimTraining()) return false;
+    try {
+      const pending = await DB.getCurrentSession();
+      if (pending?.id === currentSession?.id) {
+        const draft = currentSession.review;
+        currentSession = Core.recover(upgradePendingSession(pending));
+        if (currentSession.phase === 'REVIEW' && draft) currentSession.review = {...currentSession.review,...draft};
+        return true;
+      }
+      releaseTraining();
+      currentSession = null;
+      if (pending) await recoverPendingSession();
+      else {
+        sessionCache = await DB.getAllSessions();
+        navTo('dashboard');
+        showToast('这次训练已在其他页面结束');
+      }
+      return false;
+    } catch (error) {
+      releaseTraining();
+      throw error;
+    }
+  }
+
+  async function launchProgram(programId, scheduleItemId = null) {
+    if (currentSession && currentSession.phase !== 'COMPLETED') {
+      showToast('请先完成或结束当前训练');
+      return;
+    }
+    if (launchInFlight) return;
+    launchInFlight = true;
+    try {
+      if (!await claimTraining()) return;
+      if (await DB.getCurrentSession()) {
+        releaseTraining();
+        await recoverPendingSession();
+        return;
+      }
+      moduleActionReadyAt = 0;
+      const task = Long.tasks().find(t => t.id === scheduleItemId);
+      const program = task ? Long.taskProgram(task) : typeof programId === 'string' ? programById(programId) : programId;
+      newSession(program, scheduleItemId);
+      if (task) {
+        const instance = task.instance;
+        currentSession.longPlanId = task.planId;
+        currentSession.guidanceSnapshot = structuredClone(instance.templateSnapshot.contentSnapshot || Content.modules);
+        currentSession.contentVersion = instance.templateSnapshot.contentVersion || Content.version;
+        currentSession.planSnapshot = {week:task.weekIndex,stageName:Long.stage(task)?.name || stage().name,adaptiveType:adaptiveDecision?.type || 'NONE'};
+      }
+      renderCheckin();
+      ['difficulty','signals','awareness'].forEach(id=>$$(`#${id} .chip`).forEach(c=>c.classList.remove('selected')));
+      $('#control').value = 6;
+      $('#controlV').textContent = '未评分';
+      $('#relax').value = 5;
+      $('#relaxV').textContent = '未评分';
+      await DB.startSession(Core.checkpoint(currentSession));
+      recordBetaEvent('SESSION_LAUNCHED', { programType: program.builtin ? 'builtin' : 'custom_or_other' });
+      show('checkin');
+    } catch (error) {
+      currentSession = null;
+      releaseTraining();
+      updateReady();
+      throw error;
+    } finally { launchInFlight = false; }
+  }
+
+  function isSimple(session = currentSession) { return session?.trackingMode === 'simple'; }
+
+  function renderCheckin() {
+    const snapshot = currentSession.programSnapshot;
+    const draft = currentSession.checkin || {};
+    $('#checkinProgramName').textContent = snapshot.name;
+    $('#checkinGoal').textContent = snapshot.description || snapshot.modules.map(moduleLabel).join(' · ');
+    $('#basicSourceLink').hidden = snapshot.id !== Content.basicProgram.id;
+    $('#checkinOptions').open = !!currentSession.checkin;
+    $('#trackingModeOption').hidden = !hasExercise(currentSession, 'stop_start');
+    $('#detailedTracking').checked = !isSimple();
+    for (const [id,key,initial] of [['stress','stress',4],['fatigue','fatigue',3],['tension','pelvicTension',3]]) {
+      $('#'+id).value = draft[key] ?? initial;
+      $('#'+id+'V').textContent = draft[key] ?? '未填';
+    }
+    pain = draft.pain === true;
+    $$('[data-pain]').forEach(button => button.classList.toggle('selected', String(draft.pain) === button.dataset.pain));
+    $('#painNotice').style.display = pain ? 'block' : 'none';
   }
 
   function currentModule() { return currentSession?.programSnapshot?.modules?.[currentSession.moduleIndex] || null; }
@@ -1153,7 +1245,7 @@
     sessionTimer = setInterval(() => {
       if (!currentSession) return;
       $('#activeTime').textContent = fmt(activeElapsed());
-      if (currentSession.currentCycle && currentSession.phase === 'RECOVERY') $('#recoveryTime').textContent = fmt(activeElapsed() - (currentSession.currentCycle.stopActiveElapsedMs ?? activeElapsed()));
+      if (currentSession.currentCycle && ['RECOVERY','RESUME_AVAILABLE'].includes(currentSession.phase)) $('#recoveryTime').textContent = fmt(activeElapsed() - (currentSession.currentCycle.stopActiveElapsedMs ?? activeElapsed()));
       else $('#recoveryTime').textContent = '';
     }, 250);
   }
@@ -1181,12 +1273,20 @@
   function renderSession() {
     if (!currentSession) return;
     const phase = currentSession.phase;
-    const mode = settings.promptMode || 'full';
-    $('#explicitStop').disabled=currentSession.pausedAt||!['BUILD','CONTROL_ZONE','STOP_SUGGESTED'].includes(phase);
-    $('#explicitResume').disabled=currentSession.pausedAt||phase!=='RESUME_AVAILABLE';
-    $('#explicitMarker').disabled=currentSession.pausedAt||phase!=='RECOVERY';
+    const mode = currentSession.promptModeSnapshot || 'full';
+    const simple = isSimple(), recovering = ['RECOVERY','RESUME_AVAILABLE'].includes(phase);
     const shell = $('#sessionShell');
     shell.className = 'session-shell';
+    shell.classList.toggle('simple-training', simple);
+    $('#arousal').hidden = simple;
+    $('#levelDown').hidden = simple;
+    $('#levelUp').hidden = simple;
+    $('#explicitMarker').hidden = simple;
+    $('#explicitStop').hidden = simple && recovering;
+    $('#explicitResume').hidden = simple && !recovering;
+    $('#explicitStop').disabled = !!currentSession.pausedAt || !['BUILD','CONTROL_ZONE','STOP_SUGGESTED'].includes(phase);
+    $('#explicitResume').disabled = !!currentSession.pausedAt || !(phase === 'RESUME_AVAILABLE' || simple && recovering);
+    $('#explicitMarker').disabled = !!currentSession.pausedAt || phase !== 'RECOVERY';
     $('#arousal').textContent = currentSession.arousal;
     const target = currentSession.targetCycles || 3;
     const completed = moduleCycleCount();
@@ -1205,22 +1305,29 @@
     if (phase === 'RECOVERY') { label = '恢复中'; hint = '自然呼吸 · 放松 · 观察'; g = '↓ 记录下降 · ← 记录身体信号'; shell.classList.add('stage-recovery'); }
     if (phase === 'RESUME_AVAILABLE') { label = '已恢复'; hint = '准备好后继续'; g = '双击屏幕'; shell.classList.add('stage-recovery'); }
     if (phase === 'COMPLETE_READY') { label = '本模块目标已完成'; hint = `已完成 ${completed} 个控制循环`; g = '建议进入下一模块；也可以再进行一轮'; }
+    if (simple) {
+      label = recovering ? '等待回落' : '觉察';
+      hint = recovering ? Content.basicSteps.recovery : Content.basicSteps.build;
+      g = recovering ? Content.basicSteps.timing : '';
+      if (recovering) shell.classList.add('stage-recovery');
+    }
     $('#phaseLabel').textContent = label;
     $('#sessionHint').textContent = hint;
-    $('#gestureHint').textContent = settings.gestures?g:'使用下方按钮；等级是个人感受，随时可以暂停。';
+    $('#gestureHint').textContent = simple || settings.gestures ? g :'使用下方按钮；等级是个人感受，随时可以暂停。';
     renderCycles();
   }
-  function changeArousal(delta) {
-    if (!currentSession || currentSession.pausedAt || !['BUILD','CONTROL_ZONE','STOP_SUGGESTED','RECOVERY','RESUME_AVAILABLE','COMPLETE_READY'].includes(currentSession.phase)) return;
+  function changeArousal(delta, input = 'button') {
+    if (isSimple() || !currentSession || currentSession.pausedAt || !['BUILD','CONTROL_ZONE','STOP_SUGGESTED','RECOVERY','RESUME_AVAILABLE','COMPLETE_READY'].includes(currentSession.phase)) return;
     const previous = currentSession.arousal;
     let next = clamp(previous + delta, 0, 9);
     if (next === 9 && previous === 8 && !confirm('确认记录为 9？这会结束本次训练并进入复盘。')) return;
     if (next === previous) return;
     if (currentSession.phase === 'COMPLETE_READY') { currentSession.phase = 'BUILD'; $('#finishSheet').classList.remove('show'); }
     currentSession.arousal = next;
-    recordBetaEvent(delta > 0 ? 'SWIPE_LEVEL_UP' : 'SWIPE_LEVEL_DOWN', { phase: currentSession.phase });
+    const inputType = input === 'swipe' ? 'SWIPE' : 'BUTTON';
+    recordBetaEvent(delta > 0 ? inputType + '_LEVEL_UP' : inputType + '_LEVEL_DOWN', { phase: currentSession.phase });
     event('AROUSAL_LEVEL_CHANGED', { arousal: next });
-    const mode = settings.promptMode || 'full';
+    const mode = currentSession.promptModeSnapshot || 'full';
     if (next === 8) {
       currentSession.overshootCount += 1;
       event('OVERSHOOT');
@@ -1264,25 +1371,31 @@
     if(currentSession?.pausedAt)return;
     if (phase !== 'STOP_SUGGESTED' && !autonomousAllowed) return;
     currentSession.currentCycle = {
-      id: 'C' + (currentSession.cycles.length + 1), stopStartedAt: now(), stopActiveElapsedMs:activeElapsed(), stopLevel: currentSession.arousal,
-      peakLevel: currentSession.arousal, recoveryReachedAt: null, artMs: null, signals: [], manual
+      id: 'C' + (currentSession.cycles.length + 1), stopStartedAt: now(), stopActiveElapsedMs:activeElapsed(), stopLevel: isSimple() ? null : currentSession.arousal,
+      peakLevel: isSimple() ? null : currentSession.arousal, recoveryReachedAt: null, artMs: null, signals: [], manual
     };
     recordBetaEvent('STOP_CONFIRMED', { manual, phase });
-    event('STOP_STARTED', { manual, stopLevel: currentSession.arousal });
+    event('STOP_STARTED', { manual, stopLevel: currentSession.currentCycle.stopLevel });
     setPhase('RECOVERY');
   }
   function resumeCycle() {
-    if (currentSession?.phase !== 'RESUME_AVAILABLE'||currentSession.pausedAt) return;
-    const c = currentSession.currentCycle;
-    c.resumedAt = now(); c.resumeLevel = currentSession.arousal; c.successful = true;
+    const c = currentSession?.currentCycle;
+    if (!c || currentSession.pausedAt || !(currentSession.phase === 'RESUME_AVAILABLE' || isSimple() && currentSession.phase === 'RECOVERY')) return;
+    c.resumedAt = now();
+    c.resumeLevel = isSimple() ? null : currentSession.arousal;
+    if (isSimple()) c.manualRecoveryMs = activeElapsed() - c.stopActiveElapsedMs;
+    c.successful = true;
     currentSession.cycles.push(c);
     recordBetaEvent('RESUME_CONFIRMED', { manualStop: !!c.manual });
-    event('CYCLE_COMPLETED', { artMs: c.artMs, signals: c.signals || [], stopLevel: c.stopLevel, manual: c.manual });
+    event('CYCLE_COMPLETED', { artMs: c.artMs, manualRecoveryMs: c.manualRecoveryMs, signals: c.signals || [], stopLevel: c.stopLevel, manual: c.manual });
     currentSession.currentCycle = null;
     currentSession.cycleIndex += 1;
     if (moduleCycleCount() >= currentSession.targetCycles) {
-      setPhase('COMPLETE_READY');
-      setTimeout(() => openFinishSheet('module'), 260);
+      if (isSimple()) completeStopStartModule();
+      else {
+        setPhase('COMPLETE_READY');
+        setTimeout(() => { if (currentSession?.phase === 'COMPLETE_READY' && !currentSession.pausedAt) openFinishSheet('module'); }, 260);
+      }
     } else setPhase('BUILD');
     vibrate(24);
   }
@@ -1348,13 +1461,14 @@
     persistCurrentSoon();
   }
   function resumePaused() {
-    if (!currentSession) return;
+    if (!currentSession?.pausedAt) return;
     currentSession.pausedAt = null;
+    if(currentSession.phase==='CHECK_IN'){currentSession.activeStartedAt=null;renderCheckin();show('checkin');persistCurrentSoon();return;}
     currentSession.activeStartedAt = now();
     requestWake();
     recordBetaEvent('SESSION_RESUMED', { to: currentSession.phase });
     event('SESSION_RESUMED', { to: currentSession.phase });
-    if(currentSession.phase==='CHECK_IN'){currentSession.activeStartedAt=null;show('checkin');return;} if (currentSession.phase === 'MODULE_ACTIVE') { show('moduleGuide'); renderGuided(); runGuidedTimer(); }
+    if (currentSession.phase === 'MODULE_ACTIVE') { show('moduleGuide'); renderGuided(); runGuidedTimer(); }
     else { show('session'); renderSession(); runSessionTimer(); }
   }
   function finishSession() {
@@ -1363,6 +1477,8 @@
     stopActiveClock();
     releaseWake();
     currentSession.endedAt = now();
+    currentSession.pausedAt = null;
+    currentSession.completion = Core.completion(currentSession);
     recordBetaEvent('SESSION_FINISHED', { phase: currentSession.phase, cycles: currentSession.cycles.length });
     event('SESSION_ENDED');
     currentSession.phase = 'REVIEW';
@@ -1372,6 +1488,16 @@
 
   function configureReview() {
     const hasStop = hasExercise(currentSession, 'stop_start');
+    $('#extraReview').open = false;
+    for (const id of ['control','relax']) {
+      const value = currentSession.review?.[id];
+      $('#'+id).value = value ?? 6;
+      $('#'+id+'V').textContent = value == null ? '未评分' : value + ' / 10';
+    }
+    for (const id of ['difficulty','signals','awareness']) {
+      const key = id === 'signals' ? 'signal' : id;
+      if (currentSession.review?.[key]) $$(`#${id} .chip`).forEach(c=>c.classList.toggle('selected',c.textContent.trim()===currentSession.review[key]));
+    }
     $('#reviewControlTitle').textContent = hasStop ? '今天整体控制感' : '今天整体训练状态';
     $('#relaxReviewGroup').style.display = hasStop ? 'block' : 'none';
     $('#awarenessReviewGroup').style.display = hasStop ? 'block' : 'none';
@@ -1393,82 +1519,85 @@
     $$('#signals .chip').forEach(c => c.classList.toggle('selected', c.textContent.trim() === target));
   }
   async function saveReview() {
-    if(!currentSession||saveInFlight||currentSession.phase==='COMPLETED')return;
+    if(!currentSession||saveInFlight||currentSession.phase!=='REVIEW')return;
     saveInFlight=true;$('#saveReview').disabled=true;
-    const before=structuredClone(Long.meta());
+    let before;
     try{
+      if (!await claimPendingTraining()) return;
+      before = structuredClone(Long.meta());
       const hasStop=hasExercise(currentSession,'stop_start');
-      currentSession.review={control:+$('#control').value,relax:hasStop?+$('#relax').value:null,difficulty:reviewSelection('difficulty'),signal:reviewSelection('signals'),awareness:hasStop?reviewSelection('awareness'):null};
-      event('REVIEW_COMPLETED',currentSession.review);await persistCurrentSoon();
-      const completed=structuredClone(currentSession);completed.phase='COMPLETED';
-      if(completed.scheduleItemId)Long.markCompleted(completed.scheduleItemId,completed.id);
+      currentSession.review={control:currentSession.review?.control??null,relax:hasStop?(currentSession.review?.relax??null):null,difficulty:reviewSelection('difficulty'),signal:reviewSelection('signals'),awareness:hasStop?reviewSelection('awareness'):null};
+      if (currentSession.events.at(-1)?.type === 'REVIEW_COMPLETED') currentSession.events.pop();
+      event('REVIEW_COMPLETED',currentSession.review);
+      await persistCurrentSoon();
+      const completed = structuredClone(currentSession);
+      completed.phase = 'COMPLETED';
+      completed.pausedAt = null;
+      completed.pausedFrom = null;
+      if(completed.scheduleItemId)Long.markCompleted(completed.scheduleItemId,completed.id,completed.completion?.status);
       await DB.completeSession(completed,Long.meta());
+      releaseTraining();
       currentSession=completed;sessionCache=sessionCache.filter(s=>s.id!==completed.id);sessionCache.push(completed);sessionCache.sort((a,b)=>sessionTimestamp(a)-sessionTimestamp(b));
       $('#saveStatus').textContent='训练已保存';
       adaptiveDecision=adaptiveEngine(sessionCache);
       try{await DB.setMeta('adaptiveDecision',adaptiveDecision);await appendAdaptiveHistory(adaptiveDecision,{source:'session-review',afterSessionId:completed.id});await appendCoachHistory({source:'session-review',afterSessionId:completed.id});}catch{showToast('训练已保存，附加复盘暂未写入');}
       renderSummary();show('summary');Long.render();updateReady();
-    }catch(error){Long.hydrate(before);$('#saveStatus').textContent='保存失败 · 请重试或导出';showToast('未完成保存，请重试；当前记录仍在。');}
+    }catch(error){if(before)Long.hydrate(before);$('#saveStatus').textContent='保存失败 · 请重试或导出';showToast('未完成保存，请重试；当前记录仍在。');}
     finally{saveInFlight=false;$('#saveReview').disabled=false;}
   }
 
+  function matchesTask(session, task) {
+    return JSON.stringify(session.programSnapshot?.modules) === JSON.stringify(Long.taskProgram(task).modules);
+  }
   function renderSummary() {
     const m = computeMetrics(currentSession);
     $('#summaryProgram').textContent = currentSession.programSnapshot?.name || '训练';
-    $('#sumCycles').textContent = m.cycles || '—';
-    $('#sumArt').textContent = m.meanART ? Math.round(m.meanART / 1000) + 's' : '—';
-    $('#sumOvershoot').textContent = hasExercise(currentSession,'stop_start') ? m.overshoot : '—';
+    const manual = isSimple(), recovery = manual ? m.meanManualRecovery : m.meanART;
+    $('#sumCycles').textContent = hasExercise(currentSession,'stop_start') ? m.cycles : '—';
+    $('#sumArtLabel').textContent = manual ? '停止到继续 · 平均' : '等级回落 ART · 平均';
+    $('#sumArt').textContent = Number.isFinite(recovery) ? (recovery / 1000).toFixed(1) + ' 秒' : '—';
+    $('#sumOvershoot').textContent = fmt(currentSession.activeAccumulatedMs || 0);
+    $('#sessionAIResult').textContent = '';
+    $('#reviewWithAI').disabled = false;
     $('#sumControl').textContent = m.control != null ? m.control + '/10' : '—';
-    drawChart(currentSession);
+    drawChartTo($('#chart'),currentSession);
+    $('#sessionTimeline').innerHTML = timelineDetails(currentSession);
     $('#summaryCoachCard').innerHTML=renderCoachReport(liveCoach(),true);
     if ($('#betaFeedbackCard')) $('#betaFeedbackCard').style.display = settings.betaTelemetryEnabled ? 'block' : 'none';
     const target=$('#associateTask');
-    if(target){target.innerHTML='<option value="">保持自由训练记录</option>'+Long.tasks().filter(t=>t.status==='PLANNED'&&t.instance.status==='ACTIVE').map(t=>`<option value="${escapeHtml(t.id)}">${t.date} · ${escapeHtml(t.programSnapshot.name)}</option>`).join('');$('#associateCard').hidden=!!currentSession.scheduleItemId;}
+    if(target){target.innerHTML='<option value="">保持自由训练记录</option>'+Long.tasks().filter(t=>t.status==='PLANNED'&&t.instance.status==='ACTIVE'&&matchesTask(currentSession,t)).map(t=>`<option value="${escapeHtml(t.id)}">${t.date} · ${escapeHtml(t.programSnapshot.name)}</option>`).join('');$('#associateCard').hidden=!!currentSession.scheduleItemId||target.options?.length===1;}
   }
-  function drawChart(s) {
-    const svg = $('#chart');
-    const pts = (s.events || []).filter(e => e.type === 'AROUSAL_LEVEL_CHANGED' || e.type === 'MODULE_STARTED' && e.exerciseId === 'stop_start');
-    if (!pts.length) { svg.innerHTML = '<text x="20" y="110" fill="#7f8a98">本次没有兴奋曲线数据</text>'; return; }
-    const maxX = Math.max(...pts.map(p => p.elapsedMs), 1);
-    const w=480,h=220,pad=20;
-    const coords = pts.map(p => [pad + (p.elapsedMs/maxX)*(w-pad*2), h-pad-(Number(p.arousal||0)/9)*(h-pad*2)]);
-    const d = coords.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ');
-    let grid='';
-    for (let lvl=0;lvl<=9;lvl+=3) {
-      const y=h-pad-(lvl/9)*(h-pad*2);
-      grid += `<line x1="${pad}" y1="${y}" x2="${w-pad}" y2="${y}" stroke="#252b34" stroke-width="1"/><text x="2" y="${y+4}" fill="#74808d" font-size="11">${lvl}</text>`;
-    }
-    const stops=(s.events||[]).filter(e=>e.type==='STOP_STARTED').map(e=>{const x=pad+(e.elapsedMs/maxX)*(w-pad*2);return `<line x1="${x}" y1="${pad}" x2="${x}" y2="${h-pad}" stroke="#586473" stroke-width="1" stroke-dasharray="4 5"/>`;}).join('');
-    svg.innerHTML = grid + stops + `<path d="${d}" fill="none" stroke="#edf2f7" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>`;
-  }
-
   function setProgress(id, barId, item) {
     const target = Math.max(1,item.target);
     $(id).textContent = `${Math.min(item.done,item.target)}/${item.target}`;
     $(barId).style.width = `${Math.min(100,(item.done/target)*100)}%`;
   }
   function refreshDashboard() {
-    const s=stage(), p=weeklyProgress(), task=todayTask();
-    const program = task ? Long.taskProgram(task) : programById('standard');
-    $('#dashboardStage').textContent = `${Long.active()?'主计划':'自由训练'} · ${s.name}`;
-    $('#todayTitle').textContent = task ? program.name : `${program.name} · 灵活训练`;
-    $('#todayFocus').textContent = `今天重点：${s.focus}`;
-    const minutes = program.modules.reduce((sum,m)=>sum+(m.durationSec||0)/60+(m.exerciseId==='stop_start'?(m.cycles||s.cycles)*3:0)+(m.exerciseId==='pelvic_coordination'?(m.rounds||5)*0.15:0),0);
-    $('#todayDuration').textContent = `约 ${Math.max(5,Math.round(minutes))} 分钟`;
+    const task = todayTask(), program = task ? Long.taskProgram(task) : Content.basicProgram;
+    const week = weeklyPlanStats();
+    $('#dashboardStage').textContent = task ? '今日安排' : '随时可练';
+    $('#todayTitle').textContent = program.name;
+    $('#todayFocus').textContent = program.description || stage().focus;
+    $('#todayDuration').textContent = task ? '已排程' : '内置方案';
     $('#todayModules').innerHTML = program.modules.map(m=>`<span class="pill">${escapeHtml(moduleLabel(m))}</span>`).join('');
     $('#startTraining').dataset.programId = program.id;
     $('#startTraining').dataset.scheduleId = task?.id || '';
-    $('#startTraining').textContent = task ? '开始今日训练' : '开始灵活训练';
-    setProgress('#weekStop','#weekStopBar',p.stop); setProgress('#weekMind','#weekMindBar',p.mind); setProgress('#weekPelvic','#weekPelvicBar',p.pelvic);
-    if (!sessionCache.length) { $('#dashArt').textContent='暂无'; $('#dashTrend').textContent='完成一次动停训练后生成'; }
-    else {
-      const recent=sessionCache.filter(x=>!x.simulated&&hasExercise(x,'stop_start')&&dataQuality(x).usableForTrend).slice(-3).map(computeMetrics).filter(m=>m.meanART);
-      if (recent.length) { $('#dashArt').textContent=Math.round(recent.at(-1).meanART/1000)+'s'; $('#dashTrend').textContent=recent.length>1?recent.map(m=>Math.round(m.meanART/1000)+'s').join(' → '):'已建立第一条记录'; }
-      else { $('#dashArt').textContent='—'; $('#dashTrend').textContent='尚无动停恢复数据'; }
+    $('#startTraining').textContent = currentSession && currentSession.phase !== 'COMPLETED' ? '继续上次训练' : '开始今日训练';
+    $('#weeklyPlanStatus').textContent = week.active
+      ? `主计划 ${week.done}/${week.tasks.length} 次完成 · 部分完成 ${week.partial} · 跳过 ${week.skipped}`
+      : '本周暂无主计划';
+    $('#weeklyFreeCount').textContent = `自由训练 ${week.free} 次`;
+    for (const [category,id] of [['stop','Stop'],['mindfulness','Mind'],['pelvic','Pelvic']]) {
+      const progress = week.categories[category];
+      $('#week'+id).closest?.('.progress-row')?.toggleAttribute('hidden',!progress.target);
+      setProgress('#week'+id,'#week'+id+'Bar',progress);
     }
+    const last = sessionCache.filter(s=>!s.simulated&&!s.rehearsal&&Number.isFinite(s.review?.control)).at(-1);
+    $('#dashArt').textContent = last ? last.review.control + '/10' : '暂无';
+    $('#dashTrend').textContent = last ? formatDateTime(sessionTimestamp(last)) : '训练结束后可选评分';
     const todayExists = !!task;
     $('#deferToday').style.display = todayExists ? 'block' : 'none';
-    $('#restoreSchedule').style.visibility = 'visible';
+    $('#restoreSchedule').hidden = !week.active;
     renderAdaptiveCard();
   }
   function renderAdaptiveCard() {
@@ -1509,31 +1638,43 @@
   function renderPrograms() {
     $('#programList').innerHTML=allPrograms().map(programCard).join('');
   }
-  function resetBuilderState() {
-    builderState=[
-      {exerciseId:'breathing',selected:true,value:3},
-      {exerciseId:'mindfulness_body_scan',selected:false,value:5},
-      {exerciseId:'pelvic_coordination',selected:false,value:5},
-      {exerciseId:'stop_start',selected:true,value:stage().cycles},
-      {exerciseId:'pelvic_release',selected:true,value:2}
-    ];
+  function resetBuilderState(program = null) {
+    const selected = new Map((program?.modules || []).map(module=>[module.exerciseId,module]));
+    const order = [...selected.keys(), ...Object.keys(EXERCISES).filter(id=>!selected.has(id))];
+    builderState = order.map(exerciseId=>{
+      const module = selected.get(exerciseId);
+      const value = module ? (module.cycles ?? module.rounds ?? module.durationSec / 60) : EXERCISES[exerciseId].defaultValue;
+      return {exerciseId,selected:!!module,value};
+    });
   }
   function renderBuilder() {
     if (!builderState.length) resetBuilderState();
-    $('#builderModules').innerHTML=builderState.map((row,i)=>{const ex=EXERCISES[row.exerciseId];return `<div class="builder-row" data-builder-id="${ex.id}"><input type="checkbox" data-builder-check="${ex.id}" ${row.selected?'checked':''}><div><strong>${escapeHtml(ex.name)}</strong><div class="small">${escapeHtml(ex.instruction)}</div></div><div><input type="number" min="1" max="30" value="${row.value}" data-builder-value="${ex.id}" aria-label="${escapeHtml(ex.name)} 数量"><div class="small" style="text-align:center;margin-top:3px">${ex.unit}</div></div><div class="builder-order"><button data-builder-move="up" data-index="${i}">↑</button><button data-builder-move="down" data-index="${i}">↓</button></div></div>`;}).join('');
+    $('#builderModules').innerHTML = builderState.map((row,index)=>{
+      const exercise = EXERCISES[row.exerciseId], name = escapeHtml(exercise.name);
+      return `<div class="builder-row"><input type="checkbox" aria-label="选择${name}" data-builder-check="${exercise.id}" ${row.selected?'checked':''}>
+        <strong>${name}</strong><div><input type="number" min="1" max="30" value="${row.value}" data-builder-value="${exercise.id}" aria-label="${name}数量"><div class="small">${exercise.unit}</div></div>
+        <div class="builder-order"><button aria-label="${name}上移" data-builder-move="up" data-index="${index}" ${index===0?'disabled':''}>↑</button><button aria-label="${name}下移" data-builder-move="down" data-index="${index}" ${index===builderState.length-1?'disabled':''}>↓</button></div></div>`;
+    }).join('');
+  }
+  function draftProgram() {
+    const name = $('#customProgramName').value.trim() || '我的训练';
+    const modules = builderState.filter(row=>row.selected).map(row=>{
+      const exercise = EXERCISES[row.exerciseId];
+      const value = clamp(Math.round(Number(row.value)||exercise.defaultValue),1,30);
+      if (exercise.type==='timed') return {exerciseId:exercise.id,durationSec:value*60};
+      if (exercise.type==='interval') return {exerciseId:exercise.id,rounds:value};
+      return {exerciseId:exercise.id,cycles:value};
+    });
+    if (!modules.length) throw new Error('至少选择一个训练模块');
+    return {id:'custom-'+crypto.randomUUID(),name,description:'自定义训练方案',trackingMode:'simple',createdAt:now(),modules};
   }
   async function saveCustomProgram() {
-    const name=$('#customProgramName').value.trim()||'我的训练';
-    const modules=builderState.filter(x=>x.selected).map(row=>{
-      const ex=EXERCISES[row.exerciseId], value=clamp(Number(row.value)||ex.defaultValue,1,30);
-      if(ex.type==='timed') return {exerciseId:ex.id,durationSec:value*60};
-      if(ex.type==='interval') return {exerciseId:ex.id,rounds:value};
-      return {exerciseId:ex.id,cycles:value};
-    });
-    if(!modules.length){showToast('至少选择一个训练模块');return;}
-    customPrograms.push({id:'custom-'+now(),name,description:'自定义训练方案',builtin:false,createdAt:now(),modules});
-    await DB.setMeta('customPrograms',customPrograms);
-    renderPrograms(); showToast('已保存自定义方案');
+    const program = draftProgram();
+    const updated = [...customPrograms,program];
+    await DB.setMeta('customPrograms',updated);
+    customPrograms = updated;
+    renderPrograms();
+    showToast('已保存自定义方案');
   }
   async function scheduleProgram(programId) {
     const date=prompt('安排日期（YYYY-MM-DD，可跨月）',dateKey());
@@ -1562,34 +1703,44 @@
     const map={trends:'trendPanel',coach:'coachPanel',history:'historyPanel',compare:'comparePanel',decisions:'decisionsPanel',quality:'qualityPanel'};
     Object.entries(map).forEach(([k,id])=>$('#'+id).classList.toggle('active',k===tab));
   }
+  let trendMetric = 'control';
   function renderTrendPanel() {
-    const body=$('#trendPanelBody');
-    const visible=analysisSessions();
-    if(!visible.length){body.innerHTML='<div class="card empty">完成训练后，这里会出现 ART、Stop Level、Overshoot 和控制感的周趋势。</div>';return;}
-    const stopVisible=visible.filter(s=>s.endedAt&&hasExercise(s,'stop_start'));
-    const usableCount=stopVisible.filter(s=>dataQuality(s).usableForTrend).length;
-    const excludedCount=stopVisible.length-usableCount;
-    const weeks=weeklySeries();
-    const latest=weeks.at(-1)||{};
-    body.innerHTML=`
-      <div class="card"><div class="section-head"><h2>趋势数据质量</h2><span class="muted">${usableCount}/${stopVisible.length||0} 可用</span></div><p class="small">低质量 Session 不进入周趋势和真实 Adaptive Decision。${excludedCount?`当前排除 ${excludedCount} 条。`: '当前没有因质量问题被排除的动停记录。'}</p></div>
-      <div class="card"><div class="trend-meta"><div><div class="eyebrow">所选时间段</div><h2>恢复记录 · ART</h2></div><div class="metric-big">${Number.isFinite(latest.art)?Math.round(latest.art)+'s':'—'}</div></div><svg id="trendArtChart" viewBox="0 0 480 180" preserveAspectRatio="none"></svg><div class="small">按每周平均值展示。ART是应用内主观恢复记录，不追求更短，也不单独说明训练效果。</div></div>
-      <div class="card"><div class="trend-meta"><div><div class="eyebrow">实际 Stop</div><h2>平均 Stop Level</h2></div><div class="metric-big">${Number.isFinite(latest.stop)?latest.stop.toFixed(1):'—'}</div></div><svg id="trendStopChart" viewBox="0 0 480 180" preserveAspectRatio="none"></svg><div class="small">记录实际停止时的主观等级；自主模式尤其适合观察这个趋势。</div></div>
-      <div class="card"><div class="trend-meta"><div><div class="eyebrow">稳定性</div><h2>Level 8 · Overshoot</h2></div><div class="metric-big">${Number.isFinite(latest.overshoot)?Math.round(latest.overshoot)+'%':'—'}</div></div><svg id="trendOvershootChart" viewBox="0 0 480 180" preserveAspectRatio="none"></svg><div class="small">按进入 STOP 的循环计算，只和自己的近期状态比较。</div></div>
-      <div class="card"><div class="trend-meta"><div><div class="eyebrow">主观维度</div><h2>控制感</h2></div><div class="metric-big">${Number.isFinite(latest.control)?latest.control.toFixed(1)+'/10':'—'}</div></div><svg id="trendControlChart" viewBox="0 0 480 180" preserveAspectRatio="none"></svg></div>
-      <div class="card"><h2>每周样本</h2>${weeks.length?weeks.map(w=>`<div class="progress-row"><span>${w.label}</span><div class="progress"><i style="width:${Math.min(100,w.count/3*100)}%"></i></div><b>${w.count} 次</b></div>`).join(''):'<div class="muted">暂无动停训练</div>'}</div>`;
-    renderLineChart(document.getElementById('trendArtChart'),weeks,'art',{min:0,format:v=>Math.round(v)+'s'});
-    renderLineChart(document.getElementById('trendStopChart'),weeks,'stop',{min:0,max:9,format:v=>v.toFixed(1)});
-    renderLineChart(document.getElementById('trendOvershootChart'),weeks,'overshoot',{min:0,max:100,format:v=>Math.round(v)+'%'});
-    renderLineChart(document.getElementById('trendControlChart'),weeks,'control',{min:0,max:10,format:v=>v.toFixed(1)});
+    const body = $('#trendPanelBody');
+    const visible = analysisSessions().filter(session=>session.endedAt);
+    const metricOptions = {control:'主观控制感', manual:'停止到手动继续', art:'等级回落 ART'};
+    const eligible = visible.filter(session=>{
+      if (trendMetric==='control') return Number.isFinite(session.review?.control);
+      return dataQuality(session).usableForTrend && Number.isFinite(trendMetric==='manual'
+        ? computeMetrics(session).meanManualRecovery : computeMetrics(session).meanART);
+    });
+    const anchor = eligible.at(-1);
+    const key = anchor && Core.conditionKey(anchor);
+    const comparable = key ? visible.filter(session=>Core.conditionKey(session)===key).slice(-12) : [];
+    const rows = comparable.map(session=>{
+      const metrics = computeMetrics(session);
+      const duration = trendMetric==='manual' ? metrics.meanManualRecovery : metrics.meanART;
+      return {
+        label:dateKey(new Date(sessionTimestamp(session))).slice(5),
+        value:trendMetric==='control' ? metrics.control : dataQuality(session).usableForTrend && Number.isFinite(duration) ? duration/1000 : null
+      };
+    });
+    const count = rows.filter(row=>Number.isFinite(row.value)).length;
+    body.innerHTML = `<div class="card"><div class="section-head"><h2>近期趋势</h2><span class="muted">${count} 条可比记录</span></div>
+      <label>查看指标<select class="text-input" id="trendMetric">${Object.entries(metricOptions).map(([key,label])=>`<option value="${key}" ${key===trendMetric?'selected':''}>${label}</option>`).join('')}</select></label>
+      <p class="small">${anchor ? escapeHtml(anchor.programSnapshot?.name||'训练') + ' · ' + (isSimple(anchor)?'简易记录':'精细记录') : '完成训练并留下记录后，趋势会显示在这里。'}</p>
+      <svg id="recentTrendChart" viewBox="0 0 480 180" role="img" aria-label="${metricOptions[trendMetric]}"></svg>
+      <p class="small">每点代表一次训练。切换筛选条件可查看其他方案和记录模式。</p></div>`;
+    renderLineChart(document.getElementById('recentTrendChart'),rows,'value',trendMetric==='control'
+      ? {min:0,max:10} : {min:0,format:value=>value.toFixed(1)+' 秒'});
   }
+
   function renderHistoryPanel() {
     const body=$('#historyPanelBody');
     const rows=[...analysisSessions()].filter(s=>s.endedAt).sort((a,b)=>sessionTimestamp(b)-sessionTimestamp(a));
     if(!rows.length){body.innerHTML='<div class="card empty">还没有完成的训练记录。</div>';return;}
     body.innerHTML=`<div class="section-head"><h2>训练历史</h2><span class="muted">${rows.length} 次</span></div><div class="history-list">${rows.map(s=>{
       const m=computeMetrics(s), modules=(s.programSnapshot?.modules||[]).map(x=>EXERCISES[x.exerciseId]?.name||x.exerciseId);
-      return `<button class="session-row" data-history-id="${escapeHtml(s.id)}"><div class="session-row-top"><div><strong>${escapeHtml(s.programSnapshot?.name||'训练')}</strong><div class="small">${escapeHtml(formatDateTime(sessionTimestamp(s)))}</div></div><span style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end">${qualityBadge(s)}<span class="pill">Week ${s.planSnapshot?.week ?? '—'}</span></span></div><div class="modules">${modules.map(x=>`<span class="pill">${escapeHtml(x)}</span>`).join('')}</div><div class="session-row-meta"><span>Cycle ${m.cycles||0}</span><span>ART ${Number.isFinite(m.meanART)?Math.round(m.meanART/1000)+'s':'—'}</span><span>Stop ${Number.isFinite(m.meanStopLevel)?m.meanStopLevel.toFixed(1):'—'}</span><span>控制 ${m.control!=null?m.control+'/10':'—'}</span></div></button>`;
+      return `<button class="session-row" data-history-id="${escapeHtml(s.id)}"><div class="session-row-top"><div><strong>${escapeHtml(s.programSnapshot?.name||'训练')}</strong><div class="small">${escapeHtml(formatDateTime(sessionTimestamp(s)))}</div></div><span style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end">${qualityBadge(s)}<span class="pill">Week ${s.planSnapshot?.week ?? '—'}</span></span></div><div class="modules">${modules.map(x=>`<span class="pill">${escapeHtml(x)}</span>`).join('')}</div><div class="session-row-meta"><span>Cycle ${m.cycles||0}</span><span>${isSimple(s)?'停止到继续':'ART'} ${seconds(isSimple(s)?m.meanManualRecovery:m.meanART)??'—'}</span><span>Stop ${Number.isFinite(m.meanStopLevel)?m.meanStopLevel.toFixed(1):'—'}</span><span>控制 ${m.control!=null?m.control+'/10':'—'}</span></div></button>`;
     }).join('')}</div>`;
   }
   function renderComparePanel() {
@@ -1597,15 +1748,15 @@
     const groups=new Map();
     analysisSessions().filter(s=>s.endedAt&&hasExercise(s,'stop_start')&&dataQuality(s).usableForTrend).forEach(s=>{
       const key=Core.conditionKey(s);
-      if(!groups.has(key))groups.set(key,{name:(s.programSnapshot?.name||'训练')+' · '+(s.planSnapshot?.stageName||'未标阶段')+' · '+(PROMPT_MODES[s.promptModeSnapshot]||'默认提示')+' · 时钟v'+(s.clockVersion||1),sessions:[]});
+      if(!groups.has(key))groups.set(key,{name:(s.programSnapshot?.name||'训练')+' · '+(s.planSnapshot?.stageName||'未标阶段')+' · '+(isSimple(s)?'简易记录':PROMPT_MODES[s.promptModeSnapshot]||'默认提示')+' · 时钟v'+(s.clockVersion||1),sessions:[]});
       groups.get(key).sessions.push(s);
     });
     const rows=[...groups.values()].map(g=>{
       const ms=g.sessions.map(computeMetrics);
-      return {name:g.name,n:g.sessions.length,art:average(ms.map(m=>Number.isFinite(m.meanART)?m.meanART/1000:null)),stop:average(ms.map(m=>m.meanStopLevel)),over:average(ms.map(m=>Number.isFinite(m.overshootRate)?m.overshootRate*100:null)),control:average(ms.map(m=>m.control)),csr:average(ms.map(m=>m.csr))};
+      return {name:g.name,n:g.sessions.length,manual:average(ms.map(m=>m.meanManualRecovery)),art:average(ms.map(m=>Number.isFinite(m.meanART)?m.meanART/1000:null)),stop:average(ms.map(m=>m.meanStopLevel)),over:average(ms.map(m=>Number.isFinite(m.overshootRate)?m.overshootRate*100:null)),control:average(ms.map(m=>m.control)),csr:average(ms.map(m=>m.csr))};
     }).sort((a,b)=>b.n-a.n);
     if(!rows.length){body.innerHTML='<div class="card empty">完成包含动停模块的训练后，可以按训练方案查看描述性差异。</div>';return;}
-    body.innerHTML=`<div class="card"><h2>方案描述性对比</h2><p class="muted" style="line-height:1.55">这里不评选“最佳方案”。不同日期的压力、疲劳、熟练度和训练阶段都会影响结果；每个方案至少累计 2–3 次后再观察趋势更有意义。</p><div style="overflow-x:auto"><table class="comparison-table"><thead><tr><th>方案</th><th>次数</th><th>ART</th><th>Stop</th><th>Level 8</th><th>控制感</th><th>CSR</th></tr></thead><tbody>${rows.map(r=>`<tr><td><strong>${escapeHtml(r.name)}</strong>${r.n<2?'<div class="small">样本少</div>':''}</td><td>${r.n}</td><td>${Number.isFinite(r.art)?Math.round(r.art)+'s':'—'}</td><td>${Number.isFinite(r.stop)?r.stop.toFixed(1):'—'}</td><td>${Number.isFinite(r.over)?Math.round(r.over)+'%':'—'}</td><td>${Number.isFinite(r.control)?r.control.toFixed(1):'—'}</td><td>${Number.isFinite(r.csr)?Math.round(r.csr*100)+'%':'—'}</td></tr>`).join('')}</tbody></table></div></div>`;
+    body.innerHTML=`<div class="card"><h2>方案描述性对比</h2><p class="muted" style="line-height:1.55">这里不评选“最佳方案”。不同日期的压力、疲劳、熟练度和训练阶段都会影响结果；每个方案至少累计 2–3 次后再观察趋势更有意义。</p><div style="overflow-x:auto"><table class="comparison-table"><thead><tr><th>方案</th><th>次数</th><th>停止到继续</th><th>ART</th><th>Stop</th><th>Level 8</th><th>控制感</th><th>CSR</th></tr></thead><tbody>${rows.map(r=>`<tr><td><strong>${escapeHtml(r.name)}</strong>${r.n<2?'<div class="small">样本少</div>':''}</td><td>${r.n}</td><td>${seconds(r.manual)??'—'}</td><td>${Number.isFinite(r.art)?Math.round(r.art)+'s':'—'}</td><td>${Number.isFinite(r.stop)?r.stop.toFixed(1):'—'}</td><td>${Number.isFinite(r.over)?Math.round(r.over)+'%':'—'}</td><td>${Number.isFinite(r.control)?r.control.toFixed(1):'—'}</td><td>${Number.isFinite(r.csr)?Math.round(r.csr*100)+'%':'—'}</td></tr>`).join('')}</tbody></table></div></div>`;
   }
   function renderDecisionPanel() {
     const body=$('#decisionsPanelBody');
@@ -1624,34 +1775,82 @@
     $('#historyDetailBody').innerHTML=`<div class="eyebrow">Session Detail</div><div class="screen-title">${escapeHtml(s.programSnapshot?.name||'训练')}</div><p class="muted">${escapeHtml(formatDateTime(sessionTimestamp(s)))}</p><div style="display:flex;gap:7px;flex-wrap:wrap;margin-bottom:12px">${qualityBadge(s)}</div>
       <div class="detail-grid"><div class="detail-stat"><span class="muted">控制循环</span><strong>${m.cycles||0}</strong></div><div class="detail-stat"><span class="muted">平均 ART</span><strong>${Number.isFinite(m.meanART)?Math.round(m.meanART/1000)+'s':'—'}</strong></div><div class="detail-stat"><span class="muted">平均 Stop</span><strong>${Number.isFinite(m.meanStopLevel)?m.meanStopLevel.toFixed(1):'—'}</strong></div><div class="detail-stat"><span class="muted">Level 8 比例</span><strong>${Number.isFinite(m.overshootRate)?Math.round(m.overshootRate*100)+'%':'—'}</strong></div></div>
       <div class="card"><h2>训练组成</h2><div class="modules">${modules.map(x=>`<span class="pill">${escapeHtml(x)}</span>`).join('')}</div><div class="small" style="margin-top:10px">提示模式：${escapeHtml(PROMPT_MODES[s.promptModeSnapshot]||s.promptModeSnapshot||'—')} · Stop ${s.stopThreshold??'—'} / Resume ${s.resumeThreshold??'—'}</div></div>
-      <div class="card"><h2>训练前与复盘</h2><table class="detail-table"><tbody><tr><th>压力</th><td>${s.checkin?.stress??'—'}/10</td><th>疲劳</th><td>${s.checkin?.fatigue??'—'}/10</td></tr><tr><th>盆底紧张</th><td>${s.checkin?.pelvicTension??'—'}/10</td><th>疼痛/不适</th><td>${s.checkin?.pain?'有':'无'}</td></tr><tr><th>控制感</th><td>${s.review?.control??'—'}/10</td><th>难度</th><td>${escapeHtml(s.review?.difficulty||'—')}</td></tr><tr><th>提前觉察</th><td>${escapeHtml(s.review?.awareness||'—')}</td><th>主要信号</th><td>${escapeHtml(s.review?.signal||'—')}</td></tr></tbody></table></div>
-      ${cycles.length?`<div class="card"><div class="section-head"><h2>Control Cycles</h2><span class="small">修订不会改写原始 Event</span></div><div style="overflow-x:auto"><table class="detail-table"><thead><tr><th>#</th><th>Stop</th><th>Resume</th><th>ART</th><th>信号</th><th></th></tr></thead><tbody>${cycles.map((c,i)=>`<tr><td>${i+1}${c._revised?' *':''}</td><td>${c.stopLevel??'—'}</td><td>${c.resumeLevel??'—'}</td><td>${Number.isFinite(c.artMs)?Math.round(c.artMs/1000)+'s':'—'}</td><td>${(c.signals||[]).map(x=>escapeHtml(x)).join(', ')||'—'}</td><td><div class="cycle-actions"><button class="ghost" data-revise-cycle="${i}" data-session-id="${escapeHtml(s.id)}">修订</button></div></td></tr>`).join('')}</tbody></table></div></div>`:''}
+      <div class="card"><h2>训练前与复盘</h2><table class="detail-table"><tbody><tr><th>压力</th><td>${s.checkin?.stress??'—'}/10</td><th>疲劳</th><td>${s.checkin?.fatigue??'—'}/10</td></tr><tr><th>盆底紧张</th><td>${s.checkin?.pelvicTension??'—'}/10</td><th>疼痛/不适</th><td>${s.checkin?.pain==null?'未填':s.checkin.pain?'有':'无'}</td></tr><tr><th>控制感</th><td>${s.review?.control??'—'}/10</td><th>难度</th><td>${escapeHtml(s.review?.difficulty||'—')}</td></tr><tr><th>提前觉察</th><td>${escapeHtml(s.review?.awareness||'—')}</td><th>主要信号</th><td>${escapeHtml(s.review?.signal||'—')}</td></tr></tbody></table></div>
+      ${cycles.length?`<div class="card"><div class="section-head"><h2>动停轮次</h2><span class="small">修订不会改写原始 Event</span></div><div style="overflow-x:auto"><table class="detail-table"><thead><tr><th>#</th><th>Stop</th><th>Resume</th><th>${isSimple(s)?'停止到继续':'ART'}</th><th>信号</th><th></th></tr></thead><tbody>${cycles.map((c,i)=>`<tr><td>${i+1}${c._revised?' *':''}</td><td>${c.stopLevel??'—'}</td><td>${c.resumeLevel??'—'}</td><td>${seconds(isSimple(s)?c.manualRecoveryMs:c.artMs)??'—'}</td><td>${(c.signals||[]).map(x=>escapeHtml(x)).join(', ')||'—'}</td><td><div class="cycle-actions"><button class="ghost" ${isSimple(s)?'hidden':''} data-revise-cycle="${i}" data-session-id="${escapeHtml(s.id)}">修订</button></div></td></tr>`).join('')}</tbody></table></div></div>`:''}
       <div class="card"><h2>数据质量</h2><div class="quality-summary"><div class="detail-stat"><span class="muted">质量</span><strong>${quality.label}</strong></div><div class="detail-stat"><span class="muted">内部评分</span><strong>${quality.score}</strong></div><div class="detail-stat"><span class="muted">趋势使用</span><strong>${quality.usableForTrend?'是':'否'}</strong></div></div><div class="reason">${quality.issues.length?quality.issues.map(x=>'• '+escapeHtml(x)).join('<br>'):'没有发现明显的数据完整性问题。'}</div></div>
       ${renderRevisionLogHtml(s)}
       <div class="card"><h2>身体信号</h2>${Object.keys(signals).length?Object.entries(signals).map(([k,v])=>`<div class="progress-row"><span>${escapeHtml(k)}</span><div class="progress"><i style="width:${Math.min(100,v/Math.max(1,cycles.length)*100)}%"></i></div><b>${v}</b></div>`).join(''):'<div class="muted">本次没有记录明显信号</div>'}</div>
-      <div class="chart-wrap"><div class="section-head"><h2>兴奋度曲线</h2><span class="small">本次 Session</span></div><svg id="historyChart" viewBox="0 0 480 220" preserveAspectRatio="none"></svg></div>
+      <div class="chart-wrap"><div class="section-head"><h2>训练时间线</h2></div><svg id="historyChart" viewBox="0 0 480 220" preserveAspectRatio="none"></svg></div>
       <details class="card"><summary>查看原始事件 (${events.length})</summary><div style="overflow-x:auto;margin-top:10px"><table class="detail-table"><thead><tr><th>有效时间</th><th>事件</th><th>等级</th><th>Cycle</th></tr></thead><tbody>${events.map(e=>`<tr><td>${fmt(e.elapsedMs||0)}</td><td>${escapeHtml(e.type)}</td><td>${e.arousal??'—'}</td><td>${e.cycle??'—'}</td></tr>`).join('')}</tbody></table></div></details>
       <button id="deleteHistorySession" class="ghost" data-delete-session="${escapeHtml(s.id)}" style="margin-top:14px">删除这次训练记录</button>`;
     drawChartTo(document.getElementById('historyChart'),s);
+    document.getElementById('historyChart')?.insertAdjacentHTML('afterend',timelineDetails(s));
     show('historyDetail');
   }
-  function drawChartTo(svg,s) {
-    const pts=(s.events||[]).filter(e=>e.type==='AROUSAL_LEVEL_CHANGED'||e.type==='MODULE_STARTED'&&e.exerciseId==='stop_start');
-    if(!pts.length){svg.innerHTML='<text x="20" y="110" fill="#7f8a98">本次没有兴奋曲线数据</text>';return;}
-    const maxX=Math.max(...pts.map(p=>p.elapsedMs),1),w=480,h=220,pad=20;
-    const coords=pts.map(p=>[pad+(p.elapsedMs/maxX)*(w-pad*2),h-pad-(Number(p.arousal||0)/9)*(h-pad*2)]);
-    const d=coords.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ');
-    let grid='';for(let lvl=0;lvl<=9;lvl+=3){const y=h-pad-(lvl/9)*(h-pad*2);grid+=`<line x1="${pad}" y1="${y}" x2="${w-pad}" y2="${y}" stroke="#252b34" stroke-width="1"/><text x="2" y="${y+4}" fill="#74808d" font-size="11">${lvl}</text>`;}
-    const stops=(s.events||[]).filter(e=>e.type==='STOP_STARTED').map(e=>{const x=pad+(e.elapsedMs/maxX)*(w-pad*2);return `<line x1="${x}" y1="${pad}" x2="${x}" y2="${h-pad}" stroke="#586473" stroke-width="1" stroke-dasharray="4 5"/>`;}).join('');
-    svg.innerHTML=grid+stops+`<path d="${d}" fill="none" stroke="#edf2f7" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>`;
+  const timelineLabels = {STOP_STARTED:'停止刺激', CYCLE_COMPLETED:'继续练习', SESSION_PAUSED:'暂停训练', SESSION_RESUMED:'恢复训练'};
+  const timelineColors = {STOP_STARTED:'#f1ae71', CYCLE_COMPLETED:'#8ac8aa', SESSION_PAUSED:'#a5adbd', SESSION_RESUMED:'#8be2ef'};
+
+  function timelineEvents(session) {
+    return (session.events || []).filter(event=>Object.hasOwn(timelineLabels,event.type));
   }
+
+  function timelineDetails(session) {
+    const events = timelineEvents(session);
+    const start = session.startedAt;
+    const status = {completed:'已完成',partial:'部分完成',ended:'提前结束'}[session.completion?.status];
+    return (status ? `<p>${status} · 模块 ${Number(session.completion.completedModules)}/${Number(session.completion.plannedModules)}</p>` : '') +
+      (events.length ? `<details><summary>查看 ${events.length} 个操作时间点</summary><ul>${events.map(event=>
+        `<li>${fmt(Math.max(0,Number.isFinite(event.at) && start ? event.at-start : event.elapsedMs || 0))} · ${timelineLabels[event.type]}</li>`).join('')}</ul></details>` : '');
+  }
+
+  function drawChartTo(svg,session) {
+    if (!svg) return;
+    const events = timelineEvents(session);
+    const samples = isSimple(session) ? [] : (session.events || []).filter(event=>event.type==='AROUSAL_LEVEL_CHANGED'&&Number.isFinite(event.arousal));
+    const start = session.startedAt;
+    const time = event=>Math.max(0,start && Number.isFinite(event.at) ? event.at-start : event.elapsedMs || 0);
+    const duration = start && session.endedAt ? session.endedAt-start : session.activeAccumulatedMs || 0;
+    const end = [...events,...samples].reduce((maximum,event)=>Math.max(maximum,time(event)),Math.max(1000,duration));
+    const x = ms=>30 + ms/end*430;
+    const y = level=>175 - level*16;
+    let pausedAt = null;
+    let bands = '';
+    for (const event of events) {
+      if (event.type==='SESSION_PAUSED') pausedAt = time(event);
+      if (event.type==='SESSION_RESUMED' && pausedAt!=null) {
+        bands += `<rect x="${x(pausedAt)}" y="24" width="${Math.max(0,x(time(event))-x(pausedAt))}" height="154" fill="#465367" opacity=".38"><title>暂停训练</title></rect>`;
+        pausedAt = null;
+      }
+    }
+    if (pausedAt!=null) bands += `<rect x="${x(pausedAt)}" y="24" width="${x(end)-x(pausedAt)}" height="154" fill="#465367" opacity=".38"><title>暂停训练</title></rect>`;
+    const grid = [0,3,6,9].map(level=>`<line x1="30" y1="${y(level)}" x2="460" y2="${y(level)}" stroke="#303949"/>${samples.length?`<text x="8" y="${y(level)+4}" fill="#a5adbd">${level}</text>`:''}`).join('');
+    const marks = events.map(event=>`<line x1="${x(time(event))}" x2="${x(time(event))}" y1="24" y2="175" stroke="${timelineColors[event.type]}" stroke-dasharray="4 4"><title>${timelineLabels[event.type]} · ${fmt(time(event))}</title></line>`).join('');
+    const dots = samples.map(event=>`<circle cx="${x(time(event))}" cy="${y(event.arousal)}" r="4" fill="#edf2f7"><title>${fmt(time(event))} · 兴奋度 ${event.arousal}</title></circle>`).join('');
+    svg.setAttribute('role','img');
+    svg.setAttribute('aria-label','训练时间线。下方可查看操作时间点。');
+    svg.innerHTML = bands+grid+marks+dots+
+      `<text x="30" y="202" fill="#a5adbd">00:00</text><text x="460" y="202" text-anchor="end" fill="#a5adbd">${fmt(end)}</text>`+
+      (events.length || samples.length ? '' : '<text x="60" y="100" fill="#a5adbd">本次没有动停操作记录</text>');
+  }
+
   async function deleteHistoricalSession(id) {
     const s=sessionCache.find(x=>x.id===id); if(!s)return;
     if(!confirm('删除这次训练记录？相关趋势会重新计算，此操作无法撤销。'))return;
-    await DB.deleteSession(id); sessionCache=sessionCache.filter(x=>x.id!==id); await Long.removeSession(id);
-    (plan.schedule||[]).forEach(item=>{if(item.completedSessionId===id){item.status='PLANNED';delete item.completedSessionId;}});
-    await DB.setMeta('plan',plan);
-    adaptiveDecision=adaptiveEngine(sessionCache); await DB.setMeta('adaptiveDecision',adaptiveDecision);
+    const updatedPlan = structuredClone(plan);
+    for (const item of updatedPlan.schedule || []) {
+      if (item.completedSessionId !== id) continue;
+      item.status = 'PLANNED';
+      delete item.completedSessionId;
+    }
+    const updatedLongPlans = Long.withoutSession(id);
+    const updatedSessions = sessionCache.filter(session=>session.id!==id);
+    const updatedDecision = adaptiveEngine(updatedSessions);
+    try { await DB.deleteSession(id,{...updatedLongPlans,plan:updatedPlan,adaptiveDecision:updatedDecision}); }
+    catch (error) { showToast('删除失败，请重试'); return; }
+    plan = updatedPlan;
+    sessionCache = updatedSessions;
+    adaptiveDecision = updatedDecision;
+    Long.hydrate(updatedLongPlans);
     renderInsights(); refreshDashboard(); renderSettings(); navTo('insights'); showToast('训练记录已删除');
   }
   async function exportJsonBackup() {
@@ -1664,8 +1863,8 @@
   }
 
   function exportCsvSummary() {
-    const headers=['date','sessionId','program','week','activeMinutes','cycles','meanARTSeconds','meanStopLevel','overshootRatePercent','control','difficulty','awareness','stress','fatigue','pelvicTension','promptMode','dataQuality','qualityScore','revised','simulated'];
-    const rows=sessionCache.filter(s=>s.endedAt).map(s=>{const m=computeMetrics(s);return [new Date(sessionTimestamp(s)).toISOString(),s.id,s.programSnapshot?.name||'',s.planSnapshot?.week??'',Number.isFinite(m.activeMinutes)?m.activeMinutes.toFixed(1):'',m.cycles,Number.isFinite(m.meanART)?(m.meanART/1000).toFixed(1):'',Number.isFinite(m.meanStopLevel)?m.meanStopLevel.toFixed(2):'',Number.isFinite(m.overshootRate)?(m.overshootRate*100).toFixed(1):'',m.control??'',m.difficulty??'',m.awareness??'',m.stress??'',m.fatigue??'',m.pelvicTension??'',s.promptModeSnapshot||'',dataQuality(s).label,dataQuality(s).score,dataQuality(s).revised?'yes':'no',s.simulated?'yes':'no'];});
+    const headers=['date','sessionId','program','week','activeMinutes','cycles','meanARTSeconds','meanStopLevel','overshootRatePercent','control','difficulty','awareness','stress','fatigue','pelvicTension','promptMode','dataQuality','qualityScore','revised','simulated','trackingMode','meanManualRecoverySeconds','completion'];
+    const rows=sessionCache.filter(s=>s.endedAt).map(s=>{const m=computeMetrics(s);return [new Date(sessionTimestamp(s)).toISOString(),s.id,s.programSnapshot?.name||'',s.planSnapshot?.week??'',Number.isFinite(m.activeMinutes)?m.activeMinutes.toFixed(1):'',m.cycles,Number.isFinite(m.meanART)?(m.meanART/1000).toFixed(1):'',Number.isFinite(m.meanStopLevel)?m.meanStopLevel.toFixed(2):'',Number.isFinite(m.overshootRate)?(m.overshootRate*100).toFixed(1):'',m.control??'',m.difficulty??'',m.awareness??'',m.stress??'',m.fatigue??'',m.pelvicTension??'',s.promptModeSnapshot||'',dataQuality(s).label,dataQuality(s).score,dataQuality(s).revised?'yes':'no',s.simulated?'yes':'no',s.trackingMode||'detailed',Number.isFinite(m.meanManualRecovery)?(m.meanManualRecovery/1000).toFixed(1):'',s.completion?.status||''];});
     const csv='\ufeff'+[headers,...rows].map(r=>r.map(csvCell).join(',')).join('\n');
     downloadBlob(csv,`training-summary-${dateKey()}.csv`,'text/csv;charset=utf-8'); showToast('CSV 摘要已生成');
   }
@@ -1688,7 +1887,7 @@
     return `<div class="card"><h2>修订日志</h2><p class="small">修订以追加记录保存，不覆盖原始 Event Stream。撤销也会新增一条反向记录。</p><div class="revision-log">${rows.map(r=>`<div class="revision-item ${reversed.has(r.id)?'reversed':''}"><div class="small">${escapeHtml(formatDateTime(r.createdAt))} · Cycle ${r.cycleIndex+1} · ${escapeHtml(r.field)}</div><strong>${escapeHtml(r.oldValue)} → ${escapeHtml(r.newValue)}</strong><div class="small">${escapeHtml(r.reason||'手动纠错')}</div>${reversed.has(r.id)?'<div class="small">已撤销</div>':`<button class="ghost" style="margin-top:7px;width:auto;padding:6px 9px" data-reverse-revision="${escapeHtml(r.id)}" data-session-id="${escapeHtml(s.id)}">撤销此修订</button>`}</div>`).join('')}</div></div>`;
   }
   async function reviseCycle(sessionId, cycleIndex) {
-    const s=sessionCache.find(x=>x.id===sessionId); if(!s)return;
+    const s=sessionCache.find(x=>x.id===sessionId); if(!s||isSimple(s))return;
     const cycles=effectiveCycles(s), c=cycles[cycleIndex]; if(!c)return;
     const stopRaw=prompt(`Cycle ${cycleIndex+1} · Stop Level（0–9，留空保持 ${c.stopLevel??'—'}）`,''); if(stopRaw===null)return;
     const resumeRaw=prompt(`Resume Level（0–9，留空保持 ${c.resumeLevel??'—'}）`,''); if(resumeRaw===null)return;
@@ -1849,31 +2048,72 @@
     $('#toggleBetaTelemetry').addEventListener('click',toggleBetaTelemetry); $('#exportBetaJson').addEventListener('click',exportBetaJson); $('#exportBetaCsv').addEventListener('click',exportBetaCsv); $('#clearBetaTelemetry').addEventListener('click',clearBetaTelemetry);
     ['betaGesture','betaHapticRating','betaInterference'].forEach(id=>{const el=$('#'+id);if(el)el.addEventListener('input',()=>{const out=id==='betaGesture'?'#betaGestureV':id==='betaHapticRating'?'#betaHapticV':'#betaInterferenceV';$(out).textContent=el.value;});});
     $('#saveBetaFeedback').addEventListener('click',saveBetaFeedback);
-    document.addEventListener('visibilitychange',()=>{if(document.hidden){pauseSession();showCover();}else releaseWake();}); window.addEventListener('pagehide',()=>{pauseSession();persistCurrentSoon();});
+    document.addEventListener('visibilitychange',()=>{if(document.hidden){if(currentSession && !['CHECK_IN','COMPLETED'].includes(currentSession.phase))showCover();}else releaseWake();}); window.addEventListener('pagehide',()=>{pauseSession();persistCurrentSoon();});
 
-    $('#startTraining').addEventListener('click',()=>launchProgram($('#startTraining').dataset.programId||'standard',$('#startTraining').dataset.scheduleId||null));
-    $('#deferToday').addEventListener('click',deferToTomorrow); $('#restoreSchedule').addEventListener('click',restoreSchedule);
+    $('#startTraining').addEventListener('click', async () => {
+      try {
+        if (currentSession && currentSession.phase !== 'COMPLETED') {
+          await recoverPendingSession();
+          return;
+        }
+        await launchProgram($('#startTraining').dataset.programId || Content.basicProgram.id, $('#startTraining').dataset.scheduleId || null);
+      } catch (error) { showToast(error.message); }
+    });
+    $('#openCustomTraining').addEventListener('click', () => {
+      navTo('plan');
+      $('#customTraining').focus({preventScroll:true});
+      $('#customTraining').scrollIntoView({block:'start'});
+    });
+    $('#deferToday').addEventListener('click',deferToTomorrow);
+    $('#restoreSchedule').addEventListener('click',restoreSchedule);
 
-    ['stress','fatigue','tension'].forEach(id=>$('#'+id).addEventListener('input',()=>$('#'+id+'V').textContent=$('#'+id).value));
-    $$('[data-pain]').forEach(b=>b.addEventListener('click',()=>{pain=b.dataset.pain==='true';$$('[data-pain]').forEach(x=>x.classList.toggle('selected',x===b));$('#painNotice').style.display=pain?'block':'none';}));
+    for (const [id,key] of [['stress','stress'],['fatigue','fatigue'],['tension','pelvicTension']]) {
+      $('#'+id).addEventListener('input', () => {
+        if (currentSession?.phase !== 'CHECK_IN') return;
+        currentSession.checkin ||= {};
+        currentSession.checkin[key] = +$('#'+id).value;
+        $('#'+id+'V').textContent = $('#'+id).value;
+        persistCurrentSoon();
+      });
+    }
+    $('#detailedTracking').addEventListener('change', () => {
+      if (currentSession?.phase !== 'CHECK_IN') return;
+      currentSession.trackingMode = $('#detailedTracking').checked ? 'detailed' : 'simple';
+      persistCurrentSoon();
+    });
+    $$('[data-pain]').forEach(button=>button.addEventListener('click',()=>{
+      if (currentSession?.phase !== 'CHECK_IN') return;
+      pain=button.dataset.pain==='true';
+      currentSession.checkin ||= {};
+      currentSession.checkin.pain = pain;
+      $$('[data-pain]').forEach(x=>x.classList.toggle('selected',x===button));
+      $('#painNotice').style.display=pain?'block':'none';
+      persistCurrentSoon();
+    }));
     $('#continueCheckin').addEventListener('click',()=>{
-      currentSession.checkin={stress:+$('#stress').value,fatigue:+$('#fatigue').value,pelvicTension:+$('#tension').value,pain}; recordBetaEvent('CHECKIN_CONTINUED',{painFlag:!!pain}); event('CHECKIN_COMPLETED',currentSession.checkin);
-      if((currentSession.checkin.stress>=8||currentSession.checkin.fatigue>=8)&&!pain&&!confirm('今天状态偏疲劳。继续原计划吗？\n取消后留在训练前记录，可降低安排或结束本次。')){show('checkin');return;}
-      if(pain){showToast('出现不适，先结束并记录；持续或明显时寻求专业评估。');finishSession();return;}
-      startNextModule();
+      if (currentSession?.phase !== 'CHECK_IN') return;
+      const state = currentSession.checkin;
+      if ((state?.stress >= 8 || state?.fatigue >= 8) && !pain && !confirm('今天状态偏疲劳，继续原计划吗？')) return;
+      if (state) event('CHECKIN_COMPLETED',state);
+      recordBetaEvent('CHECKIN_CONTINUED',{painFlag:!!pain});
+      if (pain) {
+        showToast('出现不适，先结束并记录');
+        finishSession();
+      } else startNextModule();
     });
 
     const guideAction=status=>{if(now()<moduleActionReadyAt||currentSession?.phase!=='MODULE_ACTIVE'||currentSession?.pausedAt)return;moduleActionReadyAt=now()+350;completeCurrentModule(status);};
     $('#guidedPause').addEventListener('click',pauseSession); $('#completeModule').addEventListener('click',()=>guideAction('COMPLETED')); $('#skipModule').addEventListener('click',()=>guideAction('SKIPPED'));
-    $('#pauseBtn').addEventListener('click',pauseSession); $('#resumePause').addEventListener('click',resumePaused); $('#endFromPause').addEventListener('click',finishSession);
+    $('#pauseBtn').addEventListener('click',pauseSession); $('#resumePause').addEventListener('click',async()=>{try{if(await claimPendingTraining())resumePaused();}catch(error){showToast(error.message);}});
+    $('#endFromPause').addEventListener('click',async()=>{try{if(await claimPendingTraining())finishSession();}catch(error){showToast(error.message);}});
 
     const surface=$('#gestureSurface');
-    surface.addEventListener('pointerdown',e=>{if(!settings.gestures||currentSession?.pausedAt)return;touchStart={x:e.clientX,y:e.clientY,t:now()};longPressTimer=setTimeout(()=>openFinishSheet('early'),900);surface.setPointerCapture?.(e.pointerId);});
+    surface.addEventListener('pointerdown',e=>{if(isSimple()||!settings.gestures||currentSession?.pausedAt)return;touchStart={x:e.clientX,y:e.clientY,t:now()};longPressTimer=setTimeout(()=>openFinishSheet('early'),900);surface.setPointerCapture?.(e.pointerId);});
     surface.addEventListener('pointermove',e=>{if(!touchStart)return;if(Math.hypot(e.clientX-touchStart.x,e.clientY-touchStart.y)>12)clearTimeout(longPressTimer);});
     surface.addEventListener('pointercancel',()=>{clearTimeout(longPressTimer);touchStart=null;lastTap=0;});
     surface.addEventListener('pointerup',e=>{
       clearTimeout(longPressTimer); if(!touchStart)return; const dx=e.clientX-touchStart.x,dy=e.clientY-touchStart.y,dt=now()-touchStart.t;touchStart=null;
-      if(Math.abs(dy)>45&&Math.abs(dy)>Math.abs(dx)){changeArousal(dy<0?1:-1);return;}
+      if(Math.abs(dy)>45&&Math.abs(dy)>Math.abs(dx)){changeArousal(dy<0?1:-1,'swipe');return;}
       if(dx<-70&&Math.abs(dx)>Math.abs(dy)&&currentSession?.phase==='RECOVERY'){openQuickMarker();return;}
       if(Math.abs(dx)<=70&&Math.abs(dy)<=50&&dt>=350)recordBetaEvent('GESTURE_UNRECOGNIZED',{phase:currentSession?.phase||'none',durationBucket:dt>900?'long':'medium'});
       if(dt<350){const t=now(),dbl=t-lastTap<320;lastTap=t;if(settings.promptMode==='autonomous'&&['BUILD','CONTROL_ZONE'].includes(currentSession?.phase)&&!dbl){confirmStop(true);lastTap=0;return;}if(currentSession?.phase==='STOP_SUGGESTED'&&!dbl){setTimeout(()=>{if(currentSession?.phase==='STOP_SUGGESTED')confirmStop(false);},330);}if(dbl&&currentSession?.phase==='RESUME_AVAILABLE'){resumeCycle();lastTap=0;}}
@@ -1881,9 +2121,15 @@
     $$('.signal-btn').forEach(b=>b.addEventListener('click',()=>recordQuickSignal(b.dataset.signal,b.dataset.label))); $('#closeMarker').addEventListener('click',closeQuickMarker);
     $('#finishNow').addEventListener('click',finishPrimaryAction); $('#cancelFinish').addEventListener('click',cancelFinishAction);
 
-    $('#control').addEventListener('input',()=>$('#controlV').textContent=$('#control').value+' / 10'); $('#relax').addEventListener('input',()=>$('#relaxV').textContent=$('#relax').value+' / 10');
+    for (const id of ['control','relax']) $('#'+id).addEventListener('input',()=>{
+      if (currentSession?.phase !== 'REVIEW') return;
+      currentSession.review ||= {};
+      currentSession.review[id] = +$('#'+id).value;
+      $('#'+id+'V').textContent = $('#'+id).value+' / 10';
+      if (releaseTrainingLock || !navigator.locks) persistCurrentSoon();
+    });
     ['difficulty','signals','awareness'].forEach(id=>$$(`#${id} .chip`).forEach(c=>c.addEventListener('click',()=>{$$(`#${id} .chip`).forEach(x=>x.classList.remove('selected'));c.classList.add('selected');})));
-    $('#saveReview').addEventListener('click',saveReview); $('#summaryDone').addEventListener('click',()=>{currentSession=null;pendingLaunch=null;navTo('dashboard');}); $('#summaryOpenCoach').addEventListener('click',()=>{currentSession=null;pendingLaunch=null;navTo('insights');setInsightTab('coach');});
+    $('#saveReview').addEventListener('click',saveReview); $('#summaryDone').addEventListener('click',()=>{currentSession=null;navTo('dashboard');}); $('#summaryOpenCoach').addEventListener('click',()=>{currentSession=null;navTo('insights');setInsightTab('coach');});
 
     $('#toggleHaptic').addEventListener('click',async()=>{settings.haptics=!settings.haptics;await DB.setMeta('settings',settings);renderSettings();vibrate(40);});
     $('#useBundledRelay').addEventListener('click',()=>{
@@ -1916,11 +2162,11 @@
     $('#promptModes').addEventListener('click',async e=>{const b=e.target.closest('[data-mode]');if(!b)return;const mode=b.dataset.mode;if(mode==='autonomous'&&settings.promptMode!=='autonomous'&&!confirm('自主模式会关闭自动 Stop 提示。训练时由你自己判断何时单击进入 Recovery，系统只记录实际 Stop 等级。确认启用吗？'))return;settings.promptMode=mode;await DB.setMeta('settings',settings);renderSettings();showToast(`已切换：${PROMPT_MODES[mode]}`);});
     $('#clearData').addEventListener('click',async()=>{if(!confirm('删除全部本地训练数据并重置训练计划？此操作无法撤销。'))return;await DB.clearTrainingData();Long.reset();acceptedParameters={stopThreshold:7,resumeThreshold:5};parameterHistory=[];sessionCache=[];customPrograms=[];adaptiveHistory=[];simulationAdaptiveHistory=[];coachHistory=[];coachChatMessages=[];externalCoachToken='';acceptanceResults={};betaTelemetry=[];betaInstallId='';plan=defaultPlan();adaptiveDecision=adaptiveEngine([]);await DB.setMeta('plan',plan);await DB.setMeta('customPrograms',customPrograms);await DB.setMeta('adaptiveDecision',adaptiveDecision);await DB.setMeta('adaptiveHistory',adaptiveHistory);await DB.setMeta('simulationAdaptiveHistory',simulationAdaptiveHistory);await DB.setMeta('coachHistory',coachHistory);await DB.setMeta('coachChatMessages',coachChatMessages);await DB.setMeta('acceptanceResults',acceptanceResults); await DB.setMeta('betaTelemetry',betaTelemetry); await DB.setMeta('betaInstallId',betaInstallId);await ensureSchedule(true);refreshDashboard();renderPlan();renderSettings();showToast('本地训练数据已清空');});
 
-    $('#programList').addEventListener('click',async e=>{const start=e.target.closest('[data-start-program]'),sched=e.target.closest('[data-schedule-program]'),del=e.target.closest('[data-delete-program]');if(start)launchProgram(start.dataset.startProgram,null);else if(sched)await scheduleProgram(sched.dataset.scheduleProgram);else if(del&&confirm('删除这个自定义训练方案？'))await deleteProgram(del.dataset.deleteProgram);});
+    $('#programList').addEventListener('click',async e=>{const start=e.target.closest('[data-start-program]'),sched=e.target.closest('[data-schedule-program]'),del=e.target.closest('[data-delete-program]');if(start)await launchProgram(start.dataset.startProgram,null).catch(error=>showToast(error.message));else if(sched)await scheduleProgram(sched.dataset.scheduleProgram);else if(del&&confirm('删除这个自定义训练方案？'))await deleteProgram(del.dataset.deleteProgram);});
     $('#scheduleCalendar').addEventListener('click',e=>{if(e.target.closest('.drag-handle'))return;const card=e.target.closest('[data-start-schedule]');if(!card)return;const item=(plan.schedule||[]).find(x=>x.id===card.dataset.startSchedule);if(item)launchProgram(item.programId,item.id);});
     $('#builderModules').addEventListener('change',e=>{if(e.target.matches('[data-builder-check]')){const row=builderState.find(x=>x.exerciseId===e.target.dataset.builderCheck);if(row)row.selected=e.target.checked;}if(e.target.matches('[data-builder-value]')){const row=builderState.find(x=>x.exerciseId===e.target.dataset.builderValue);if(row)row.value=clamp(+e.target.value||1,1,30);}});
     $('#builderModules').addEventListener('click',e=>{const b=e.target.closest('[data-builder-move]');if(!b)return;const i=+b.dataset.index,dir=b.dataset.builderMove==='up'?-1:1,j=i+dir;if(j<0||j>=builderState.length)return;[builderState[i],builderState[j]]=[builderState[j],builderState[i]];renderBuilder();});
-    $('#saveCustomProgram').addEventListener('click',saveCustomProgram); $('#resetBuilder').addEventListener('click',()=>{resetBuilderState();renderBuilder();showToast('已重置组合');});
+
 
     window.addEventListener('pointermove',e=>{if(dragState){e.preventDefault();moveDragGhost(e.clientX,e.clientY);}}, {passive:false});
     window.addEventListener('pointerup',()=>endDrag());
@@ -1937,7 +2183,8 @@
   async function recoverPendingSession() {
     let pending=await DB.getCurrentSession();if(!pending)return;
     pending=Core.recover(upgradePendingSession(pending));currentSession=pending;
-    if(pending.phase==='REVIEW'||(pending.endedAt&&!pending.review)){prefillReviewSignal();configureReview();show('review');return;}
+    refreshDashboard();
+    if(pending.phase==='REVIEW'||(pending.endedAt&&!pending.review)){currentSession.phase='REVIEW';prefillReviewSignal();configureReview();show('review');return;}
     $('#pauseTime').textContent=fmt(activeElapsed());$('#pause .muted').textContent=pending.recoveryNotice;
     if(pending.currentCycle&&pending.currentCycle.stopActiveElapsedMs==null){pending.currentCycle.stopActiveElapsedMs=activeElapsed();pending.currentCycle.legacyRecovery=true;}
     show('pause');
@@ -1965,7 +2212,7 @@
       await maybeAdvancePlan();
       resetBuilderState(); bindUI(); bindNewUI(); refreshDashboard(); renderPlan(); renderSettings(); await recoverPendingSession();
       document.body.dataset.appReady='true';
-      registerWorker(); checkpointTimer=setInterval(()=>{if(currentSession&&!currentSession.pausedAt&&currentSession.phase!=='COMPLETED')persistCurrentSoon();},5000); $('#saveStatus').textContent='已读取本机数据';if(!await DB.getMeta('onboardingDone',false)&&!currentSession)$('#rehearsalDialog').showModal();
+      registerWorker(); checkpointTimer=setInterval(()=>{if(currentSession&&!currentSession.pausedAt&&currentSession.phase!=='COMPLETED')persistCurrentSoon();},5000); $('#saveStatus').textContent='已读取本机数据';
     } catch(err) {
       console.error(err); $('#adaptiveCard').innerHTML='<strong>本地数据读取失败</strong><div class="reason">'+escapeHtml(err.message)+'。原始迁移数据不会清除。请保留当前浏览器数据并重试。</div>'; $('#dbStatus').textContent='初始化失败'; document.body.dataset.appReady='error';
     }
@@ -1988,17 +2235,103 @@
     $('#evidenceBody').innerHTML=`<p>${escapeHtml(Content.guidance.plan.text)}</p><p class="small">内容版本 ${Content.version} · 核对 ${Content.checkedAt}</p>`+Object.entries(Content.modules).map(([key,m])=>`<div class="field"><strong>${escapeHtml(EXERCISES[key].name)}</strong><p>${escapeHtml(m.detail)}</p><p class="small">${escapeHtml(m.limitation)}</p><p>${m.sourceIds.map(id=>`<a href="${escapeHtml(Content.sources[id].url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(Content.sources[id].institution)}</a>`).join(' · ')}</p></div>`).join('')+Object.values(Content.guidance).map(g=>`<p class="small">${escapeHtml(g.text)} · ${escapeHtml(g.kind||'健康教育')} ${g.sourceIds.map(id=>`<a href="${escapeHtml(Content.sources[id].url)}" target="_blank" rel="noopener noreferrer">来源</a>`).join(' ')}</p>`).join('')+Object.values(Content.sources).map(source=>`<div class="field"><a href="${escapeHtml(source.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(source.title)}</a><p class="small">${escapeHtml(source.institution)} · ${source.year||'页面未注明年份'} · ${source.checkedAt}</p><p class="small">${escapeHtml(source.supports)}</p></div>`).join('');
     $('#evidenceDialog').showModal();
   }
+  const seconds = value=>Number.isFinite(value) ? (value/1000).toFixed(1)+' 秒' : null;
+  function sessionReviewData(session) {
+    const measures = computeMetrics(session), manual = isSimple(session);
+    const stopStart = hasExercise(session,'stop_start');
+    const facts = [
+      ['有效时长',Number.isFinite(session.activeAccumulatedMs) ? fmt(session.activeAccumulatedMs) : null],
+      ['完成轮次',stopStart ? String(measures.cycles) : null],
+      [manual ? '停止到手动继续' : '等级回落 ART',seconds(manual ? measures.meanManualRecovery : measures.meanART)],
+      ['主观控制感',Number.isFinite(measures.control) ? measures.control+'/10' : null]
+    ].filter(([,value])=>value!=null);
+    return {scope:'session',facts,pain:session.checkin?.pain===true,comparable:false,stopStart};
+  }
+
+  function weeklyReviewData() {
+    const week = weekStartKey(now()), previous = LongPlans.addDays(week,-7), stats = weeklyPlanStats();
+    const real = sessionCache.filter(session=>session.endedAt&&!session.simulated&&!session.rehearsal);
+    const thisWeek = real.filter(session=>weekStartKey(sessionTimestamp(session))===week);
+    const anchor = thisWeek.filter(session=>session.clockVersion===2 && Number.isFinite(session.review?.control)).at(-1);
+    const matching = anchor ? real.filter(session=>Core.conditionKey(session)===Core.conditionKey(anchor) && Number.isFinite(session.review?.control)) : [];
+    const recent = matching.filter(session=>weekStartKey(sessionTimestamp(session))===week);
+    const earlier = matching.filter(session=>weekStartKey(sessionTimestamp(session))===previous);
+    const comparable = Math.min(recent.length,earlier.length)>=3;
+    const facts = [['本周训练',thisWeek.length+' 次'],['自由训练',stats.free+' 次']];
+    if (stats.active) facts.push(['主计划完成',stats.done+'/'+stats.tasks.length],['部分完成',stats.partial+' 次'],['跳过',stats.skipped+' 次']);
+    facts.push(['同条件控制感样本',recent.length+' / '+earlier.length+' 条']);
+    if (comparable) {
+      facts.push(['本周平均控制感',average(recent.map(session=>session.review.control)).toFixed(1)+'/10']);
+      facts.push(['上周平均控制感',average(earlier.map(session=>session.review.control)).toFixed(1)+'/10']);
+    }
+    return {scope:'week',facts,pain:thisWeek.at(-1)?.checkin?.pain===true,comparable,stopStart:thisWeek.some(session=>hasExercise(session,'stop_start'))};
+  }
+
+  function reviewFacts(data) {
+    return `<ul>${data.facts.map(([label,value])=>`<li>${escapeHtml(label)} · ${escapeHtml(value)}</li>`).join('')}</ul>`;
+  }
+
+  function localReviewText(data) {
+    if (data.pain) return {answer:'这次记录了不适，先暂停练习。持续或明显不适时，考虑寻求专业评估。',focus:''};
+    return {
+      answer: data.scope==='session' ? '已整理本次记录。可以结合时间线回看自己的感受。'
+        : data.comparable ? '已整理两周同条件的控制感记录，可查看自己的评分变化。'
+        : '两周同条件的评分样本不足，当前可以回看本周记录。',
+      focus: data.stopStart ? '下次可以沿用同一种记录方式，留意自己何时感觉应当停止。' : '下次可以继续记录练习后的主观感受。'
+    };
+  }
+
+  async function requestAIReview(buttonId,resultId,data) {
+    const button = $('#'+buttonId), result = $('#'+resultId);
+    const render = (reply,status)=>{result.innerHTML=`<p><strong>${escapeHtml(status)}</strong></p><p>${escapeHtml(reply.answer)}</p>${reviewFacts(data)}${reply.focus?`<p>下次关注 · ${escapeHtml(reply.focus)}</p>`:''}`;};
+    const fallback = localReviewText(data);
+    if (data.pain) { render(fallback,'本地复盘'); return; }
+    if (data.scope==='week' && data.facts[0]?.[1]==='0 次') {
+      render({answer:'本周还没有训练记录。',focus:''},'本地复盘');
+      return;
+    }
+    if (!externalCoachConfigured()) {
+      render(fallback,'本地复盘 · AI 尚未启用');
+      result.insertAdjacentHTML('beforeend','<button type="button" class="ghost" data-open-ai-settings>开启外部 AI</button>');
+      return;
+    }
+    if (!confirm('将下面的摘要发送给外部 AI？\n\n'+data.facts.map(([label,value])=>label+' '+value).join('\n')+
+      (data.pain ? '\n最近记录有不适' : '')+'\n\n同时发送复盘范围、样本可比状态及是否包含动停。')) return;
+    button.disabled = true;
+    result.textContent = '正在解读训练摘要…';
+    try {
+      const reply = await callExternalCoach('请解读本次提供的训练摘要。',data);
+      if (/\p{N}/u.test(reply.answer+(reply.focus||''))) throw new Error('AI 解读包含未核对数字');
+      render(reply,'AI 解读');
+    } catch (error) {
+      render(fallback,'AI 暂不可用 · 本地复盘');
+    } finally { button.disabled = false; }
+  }
+
+  function renderWeekCalendar() {
+    const start = weekStartKey(now()), week = weeklyPlanStats();
+    const days = Array.from({length:7},(_,index)=>{
+      const date = LongPlans.addDays(start,index);
+      const tasks = week.tasks.filter(task=>task.date===date);
+      const counts = tasks.reduce((statuses,task)=>{
+        const status = task.status==='COMPLETED' ? '完成' : task.status==='SKIPPED' ? '跳过'
+          : task.lastPartialSessionId ? '部分完成' : '待练';
+        statuses[status] = (statuses[status]||0)+1;
+        return statuses;
+      },{});
+      const label = Object.entries(counts).map(([status,count])=>status+' '+count).join(' · ');
+      return `<li><time datetime="${date}">${date.slice(5)}</time><span>${label||'—'}</span></li>`;
+    });
+    return week.active ? `<ol class="week-calendar" aria-label="本周计划日历">${days.join('')}</ol>` : '';
+  }
+
   function reportAndFilters(){
-    const samples=analysisSessions().filter(s=>s.review&&s.endedAt),real=samples.filter(s=>!s.simulated),start=weekStartKey(now()),week=real.filter(s=>weekStartKey(sessionTimestamp(s))===start),usable=week.filter(s=>hasExercise(s,'stop_start')&&dataQuality(s).usableForTrend);
-    const plan=Long.active(),tasks=plan?.tasks.filter(t=>weekStartKey(LongPlans.parseDate(t.date).getTime())===start)||[],done=tasks.filter(t=>t.status==='COMPLETED').length;
-    const latest=usable.at(-1),same=latest?real.filter(s=>Core.conditionKey(s)===Core.conditionKey(latest)&&hasExercise(s,'stop_start')&&dataQuality(s).usableForTrend).sort((a,b)=>sessionTimestamp(a)-sessionTimestamp(b)):[],recent=same.slice(-3),previous=same.slice(-6,-3);
-    let change='同条件前后窗口各不足3条，暂不判断变化。';
-    if(recent.length===3&&previous.length===3){const before=average(previous.map(s=>computeMetrics(s).control)),after=average(recent.map(s=>computeMetrics(s).control));if(Number.isFinite(before)&&Number.isFinite(after))change=`同条件最近3次控制感均值 ${after.toFixed(1)}/10，之前3次 ${before.toFixed(1)}/10。仅描述个人记录，不证明训练效果。`;}
-    const excluded=week.length-usable.length;
-    $('#weeklyReport').innerHTML=`<h2>个人周复盘</h2><p>本周 ${week.length} 次记录 · 主计划 ${done}/${tasks.length} 次完成 · ${usable.length} 条可比较动停记录 · ${excluded} 条不参与动停比较</p><p class="small">${Content.guidance.trend.text}</p><p>值得关注：${escapeHtml(change)}</p><p class="small">下一次：${escapeHtml(Content.modules.stop_start.short)}</p>`;
+    const data = weeklyReviewData();
+    const text = localReviewText(data);
+    $('#weeklyReport').innerHTML=`<h2>个人周复盘</h2>${renderWeekCalendar()}${reviewFacts(data)}<p>${escapeHtml(text.answer)}</p>`;
     const select=(key,label,values)=>`<label>${label}<select class="text-input" data-filter="${key}"><option value="">全部</option>${values.map(([value,text])=>`<option value="${escapeHtml(value)}" ${insightFilter[key]===value?'selected':''}>${escapeHtml(text)}</option>`).join('')}</select></label>`;
     const unique=key=>[...new Set(sessionCache.map(key).filter(Boolean))].map(value=>[value,value]);
-    $('#insightFilters').innerHTML=`<details><summary>筛选条件与计时口径</summary>${select('plan','长期计划',Long.meta().longPlans.map(p=>[p.id,p.name]))}${select('stage','阶段',unique(s=>s.planSnapshot?.stageName))}${select('program','单次方案',unique(s=>s.programSnapshot?.name))}${select('mode','提示模式',Object.entries(PROMPT_MODES))}${select('clock','计时口径',[['2','新版有效时钟'],['1','旧版：暂停口径不可靠']])}<label>开始日期<input type="date" class="text-input" data-filter="from" value="${insightFilter.from}"></label><label>结束日期<input type="date" class="text-input" data-filter="to" value="${insightFilter.to}"></label><p class="small">默认仅比较新版计时。选择全部会混合计时口径，仅供浏览，不作前后改善结论。</p></details>`;
+    $('#insightFilters').innerHTML=`<details><summary>筛选条件与计时口径</summary>${select('plan','长期计划',Long.meta().longPlans.map(p=>[p.id,p.name]))}${select('stage','阶段',unique(s=>s.planSnapshot?.stageName))}${select('program','单次方案',unique(s=>s.programSnapshot?.name))}${select('tracking','记录模式',[['simple','简易记录'],['detailed','精细记录']])}${select('mode','提示模式',Object.entries(PROMPT_MODES))}${select('clock','计时口径',[['2','新版有效时钟'],['1','旧版：暂停口径不可靠']])}<label>开始日期<input type="date" class="text-input" data-filter="from" value="${insightFilter.from}"></label><label>结束日期<input type="date" class="text-input" data-filter="to" value="${insightFilter.to}"></label><p class="small">默认仅比较新版计时。选择全部会混合计时口径，仅供浏览，不作前后改善结论。</p></details>`;
   }
   function updateReady(){const training=!!currentSession&&currentSession.phase!=='COMPLETED';$('#applyUpdate').hidden=!waitingWorker||training;$('#applyUpdate').disabled=training;}
   async function registerWorker(){
@@ -2012,10 +2345,33 @@
   }
   function bindNewUI(){
     const on=(id,fn)=>$('#'+id).addEventListener('click',()=>Promise.resolve().then(fn).catch(error=>showToast(error.message)));
+    on('reviewWithAI',()=>{if(currentSession?.phase==='COMPLETED')return requestAIReview('reviewWithAI','sessionAIResult',sessionReviewData(currentSession));});
+    on('weeklyReviewWithAI',()=>requestAIReview('weeklyReviewWithAI','weeklyAIResult',weeklyReviewData()));
+    for (const id of ['sessionAIResult','weeklyAIResult']) $('#'+id).addEventListener('click',event=>{
+      if (!event.target.closest('[data-open-ai-settings]')) return;
+      navTo('settings');
+      const endpoint = $('#externalCoachEndpoint');
+      if (!endpoint.value) endpoint.value = bundledRelayEndpoint() || '';
+      endpoint.focus();
+    });
+    on('copyBasicProgram',()=>{resetBuilderState(Content.basicProgram);$('#customProgramName').value='动停法基础跟练 · 副本';renderBuilder();});
+    on('clearBuilder',()=>{resetBuilderState();$('#customProgramName').value='我的训练';renderBuilder();});
+    on('runCustomProgram',()=>launchProgram(draftProgram()));
+    on('saveCustomProgram',saveCustomProgram);
+    on('scheduleNextTraining',async()=>{
+      const program = currentSession?.programSnapshot;
+      if (!program) return;
+      const date = prompt('安排日期（YYYY-MM-DD）',LongPlans.addDays(dateKey(),1));
+      if (!date) return;
+      await Long.addTask(program,date);
+      navTo('plan');
+      showToast('已安排下次训练');
+    });
     on('levelDown',()=>changeArousal(-1));on('levelUp',()=>changeArousal(1));on('explicitStop',()=>confirmStop(true));on('explicitResume',resumeCycle);on('explicitMarker',openQuickMarker);on('explicitFinish',finishSession);
-    on('endCheckin',()=>{if(currentSession){currentSession.checkin={stress:+$('#stress').value,fatigue:+$('#fatigue').value,pelvicTension:+$('#tension').value,pain};finishSession();}});
-    on('cancelCheckin',async()=>{await DB.clearCurrentSession();currentSession=null;pendingLaunch=null;updateReady();navTo('dashboard');showToast('已取消，原安排保留');});
-    on('associateTraining',async()=>{const id=$('#associateTask').value;if(!id||!currentSession)return;const task=Long.tasks().find(t=>t.id===id);if(!task)return;const before=structuredClone(Long.meta()),copy=structuredClone(currentSession);copy.scheduleItemId=id;copy.longPlanId=task.planId;Long.markCompleted(id,copy.id);try{await DB.completeSession(copy,Long.meta());currentSession=copy;sessionCache=sessionCache.map(s=>s.id===copy.id?copy:s);renderSummary();showToast('已关联，实际训练时间保留');}catch(error){Long.hydrate(before);throw error;}});
+    on('endCheckin',finishSession);
+    on('openRehearsal',()=>openRehearsal($('#detailedTracking').checked));
+    on('cancelCheckin',async()=>{await DB.clearCurrentSession(currentSession?.id);releaseTraining();currentSession=null;updateReady();navTo('dashboard');showToast('已取消，原安排保留');});
+    on('associateTraining',async()=>{const id=$('#associateTask').value;if(!id||!currentSession)return;const task=Long.tasks().find(t=>t.id===id&&t.status==='PLANNED');if(!task||!matchesTask(currentSession,task))return;const before=structuredClone(Long.meta()),copy=structuredClone(currentSession);copy.scheduleItemId=id;copy.longPlanId=task.planId;Long.markCompleted(id,copy.id,copy.completion?.status);try{await DB.completeSession(copy,Long.meta(),false);currentSession=copy;sessionCache=sessionCache.map(s=>s.id===copy.id?copy:s);renderSummary();showToast('已关联，实际训练时间保留');}catch(error){Long.hydrate(before);throw error;}});
     on('retrySave',persistCurrentSoon);on('exportCurrent',exportJsonBackup);on('showPrivacy',showCover);on('hidePrivacy',()=>$('#privacyCover').classList.remove('show'));
     on('exportPendingReview',exportJsonBackup);
     for(const [id,key] of [['toggleGestures','gestures'],['toggleHand','leftHanded'],['toggleWake','keepAwake']])on(id,async()=>{settings[key]=!settings[key];await DB.setMeta('settings',settings);renderPreferences();if(key==='keepAwake'){if(settings[key])requestWake();else releaseWake();}});
@@ -2059,15 +2415,33 @@
       }catch(error){$('#restoreError').textContent=error.message;}
       finally{button.disabled=false;}
     });
-    let demo={level:2,stop:false,paused:false,done:new Set()};
-    const demoRender=()=>{$('#rehearsalLevel').textContent=demo.level;$('#rehearsalHint').textContent=`用＋／－记录感受，Stop后降低等级，再Resume；试试暂停和标记。已体验 ${demo.done.size}/5 项。${demo.paused?'当前暂停。':''}`;};
-    on('startRehearsal',()=>{demo={level:2,stop:false,paused:false,done:new Set()};demoRender();$('#rehearsalDialog').showModal();});
-    on('demoUp',()=>{if(!demo.paused){demo.level=Math.min(8,demo.level+1);demo.done.add('level');demoRender();}});
-    on('demoDown',()=>{if(!demo.paused){demo.level=Math.max(0,demo.level-1);demo.done.add('level');demoRender();}});
-    on('demoStop',()=>{if(!demo.paused){demo.stop=true;demo.done.add('stop');demoRender();}});
-    on('demoResume',()=>{if(demo.stop&&!demo.paused&&demo.level<=5){demo.stop=false;demo.done.add('resume');demoRender();}else $('#rehearsalHint').textContent='先Stop，降低等级，再继续。';});
-    on('demoPause',()=>{demo.paused=!demo.paused;demo.done.add('pause');demoRender();});on('demoMarker',()=>{demo.done.add('marker');demoRender();});
-    on('closeRehearsal',async()=>{await DB.setMeta('onboardingDone',true);$('#rehearsalDialog').close();});demoRender();
+    let demo = {level:2,stopped:false,paused:false,detailed:false};
+    function demoRender() {
+      for (const id of ['rehearsalLevel','demoUp','demoDown','demoMarker']) $('#'+id).hidden = !demo.detailed;
+      $('#rehearsalLevel').textContent = demo.level;
+      $('#demoStop').disabled = demo.paused || demo.stopped;
+      $('#demoResume').disabled = demo.paused || !demo.stopped || demo.detailed && demo.level>5;
+      $('#demoPause').textContent = demo.paused ? '恢复演练' : '暂停训练';
+      $('#rehearsalHint').textContent = demo.paused ? '练习已暂停。' : demo.stopped
+        ? (demo.detailed ? '用减号记录等级回落，然后点继续练习。' : Content.basicSteps.recovery)
+        : Content.basicSteps.build;
+    }
+    function openRehearsal(detailed = false) {
+      demo = {level:2,stopped:false,paused:false,detailed};
+      demoRender();
+      $('#rehearsalDialog').showModal();
+    }
+    on('startRehearsal',()=>openRehearsal());
+    on('demoUp',()=>{if(!demo.paused){demo.level=Math.min(8,demo.level+1);demoRender();}});
+    on('demoDown',()=>{if(!demo.paused){demo.level=Math.max(0,demo.level-1);demoRender();}});
+    on('demoStop',()=>{if(!demo.paused){demo.stopped=true;demoRender();}});
+    on('demoResume',()=>{if(demo.stopped&&!demo.paused&&(!demo.detailed||demo.level<=5)){demo.stopped=false;demoRender();}});
+    on('demoPause',()=>{demo.paused=!demo.paused;demoRender();});
+    on('demoMarker',()=>{if(!demo.paused)$('#rehearsalHint').textContent='演示标记已添加。';});
+    on('closeRehearsal',()=>$('#rehearsalDialog').close());
+    $('#trendPanelBody').addEventListener('change',event=>{
+      if (event.target.id==='trendMetric') {trendMetric=event.target.value;renderTrendPanel();}
+    });
     $('#insightFilters').addEventListener('change',event=>{const key=event.target.dataset.filter;if(key){insightFilter[key]=event.target.value;renderInsights();reportAndFilters();}});
     const oldRender=renderInsights;renderInsights=()=>{oldRender();reportAndFilters();};
     window.addEventListener('unhandledrejection',()=>{$('#saveStatus').textContent='操作未完成 · 请重试或导出';});
@@ -2082,7 +2456,6 @@
       if(event.key==='Escape'){event.preventDefault();if(sheet.id==='quickMarkerSheet')closeQuickMarker();else if(sheet.id==='finishSheet')cancelFinishAction();else sheet.classList.remove('show');}
       if(event.key==='Tab'){const controls=[...sheet.querySelectorAll('button,input,select,textarea,a[href]')].filter(el=>!el.disabled);if(!controls.length)return;const first=controls[0],last=controls.at(-1);if(event.shiftKey&&(document.activeElement===first||!sheet.contains(document.activeElement))){event.preventDefault();last.focus();}else if(!event.shiftKey&&(document.activeElement===last||!sheet.contains(document.activeElement))){event.preventDefault();first.focus();}}
     });
-    $('#checkin .screen-title + .muted')?.remove();
     $('#pause .muted').textContent=Content.guidance.pause.text;
     $('#review > .muted').textContent=Content.guidance.review.text;
   }

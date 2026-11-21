@@ -22,6 +22,7 @@
   const builtins=[4,8,12].map(length=>({...makeTemplate(length),id:'builtin-'+length,builtin:true,name:length===4?'4周入门':length===8?'8周循序练习':'12周巩固'}));
   function validateProgram(program){
     if(!program||typeof program.name!=='string'||!program.name.trim()||program.name.length>80||!Array.isArray(program.modules)||!program.modules.length||program.modules.length>20)throw new Error('单次方案无效');
+    if(program.trackingMode!=null&&!['simple','detailed'].includes(program.trackingMode))throw new Error('记录模式无效');
     for(const module of program.modules){
       if(!window.TrainingContent.modules[module.exerciseId])throw new Error('未知训练模块');
       const timed=!['stop_start','pelvic_coordination'].includes(module.exerciseId),value=timed?module.durationSec:module.exerciseId==='stop_start'?module.cycles:module.rounds;

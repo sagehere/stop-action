@@ -125,10 +125,13 @@
     });
   }
 
-  function deleteSession(id) {
+  function deleteSession(id, meta = {}) {
+    const values = structuredClone(meta);
     return enqueueWrite(async () => {
-      const tx = db.transaction(SESSION_STORE, 'readwrite');
+      const tx = db.transaction([SESSION_STORE, KV_STORE], 'readwrite');
       tx.objectStore(SESSION_STORE).delete(id);
+      const kv = tx.objectStore(KV_STORE);
+      Object.entries(values).forEach(([key,value])=>kv.put({key,value,updatedAt:Date.now()}));
       await transactionDone(tx);
     });
   }
@@ -151,16 +154,38 @@
     });
   }
 
-  function setCurrentSession(session) {
-    return setMeta('currentSession', session);
+  function changeCurrentSession(tx, change) {
+    const done = transactionDone(tx);
+    const store = tx.objectStore(KV_STORE);
+    const request = store.get('currentSession');
+    let failure;
+    // Queue writes while the IndexedDB request handler still owns the active transaction.
+    request.onsuccess = () => {
+      try { change(request.result?.value,store); }
+      catch (error) {
+        failure = error;
+        tx.abort();
+      }
+    };
+    return done.catch(error=>{throw failure || error;});
   }
 
-  async function getCurrentSession() {
-    return getMeta('currentSession', null);
+  function writeCurrentSession(session, starting) {
+    const snapshot = structuredClone(session);
+    return enqueueWrite(() => changeCurrentSession(db.transaction(KV_STORE,'readwrite'),(existing,store)=>{
+      if (starting ? existing : existing?.id !== snapshot.id) throw new Error('当前训练已在其他页面更新');
+      store.put({key:'currentSession',value:snapshot,updatedAt:Date.now()});
+    }));
   }
 
-  function clearCurrentSession() {
-    return deleteMeta('currentSession');
+  function startSession(session) { return writeCurrentSession(session, true); }
+  function setCurrentSession(session) { return writeCurrentSession(session, false); }
+  function getCurrentSession() { return getMeta('currentSession', null); }
+
+  function clearCurrentSession(id) {
+    return enqueueWrite(() => changeCurrentSession(db.transaction(KV_STORE,'readwrite'),(existing,store)=>{
+      if (existing?.id === id) store.delete('currentSession');
+    }));
   }
 
   function clearTrainingData() {
@@ -196,15 +221,24 @@
       await done;
     });
   }
-  function completeSession(session, meta = {}) {
+  function completeSession(session, meta = {}, finishPending = true) {
     const snapshot = structuredClone(session), values = structuredClone(meta);
     return enqueueWrite(async () => {
       const tx = db.transaction([SESSION_STORE, KV_STORE], 'readwrite');
+      const write = store => {
+        tx.objectStore(SESSION_STORE).put(snapshot);
+        Object.entries(values).forEach(([key,value])=>store.put({key,value,updatedAt:Date.now()}));
+      };
+      if (finishPending) {
+        return changeCurrentSession(tx,(existing,store)=>{
+          if (existing?.id !== snapshot.id) throw new Error('当前训练已在其他页面结束或更新');
+          store.delete('currentSession');
+          write(store);
+        });
+      }
       const done = transactionDone(tx);
-      tx.objectStore(SESSION_STORE).put(snapshot);
-      const kv = tx.objectStore(KV_STORE);
-      kv.delete('currentSession');
-      Object.entries(values).forEach(([key, value]) => kv.put({ key, value, updatedAt: Date.now() }));
+      try { write(tx.objectStore(KV_STORE)); }
+      catch (error) { tx.abort(); await done.catch(()=>{}); throw error; }
       await done;
     });
   }
@@ -217,7 +251,7 @@
     getMeta,
     setMeta,
     deleteMeta,
-    setCurrentSession,
+    startSession, setCurrentSession,
     getCurrentSession,
     clearCurrentSession,
     clearTrainingData, importData, completeSession

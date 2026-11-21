@@ -53,7 +53,7 @@ try {
   const staticResp=await fetch(`${base}/index.html`);
   assert.equal(staticResp.status,200);
   assert.match(staticResp.headers.get('content-security-policy')||'',/default-src 'self'/);
-  assert.match(await staticResp.text(),/v1\.0/);
+  assert.match(await staticResp.text(),/开始今日训练|自定义训练/);
 
   const noAuth=await fetch(`${base}/api/coach`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(goodRequest)});
   assert.equal(noAuth.status,401);
@@ -67,6 +67,16 @@ try {
   assert.equal(out.schema,'coach-chat-response-v1');
   assert.equal(typeof out.output.answer,'string');
   assert.equal('stopThreshold' in out.output,false);
+
+  const reviewRequest = {...goodRequest, message:'请解读本次提供的训练摘要。', conversation:[],
+    context:{schema:'coach-context-v1',privacy:goodRequest.context.privacy,
+      review:{scope:'session',facts:[['有效时长','01:20'],['停止到手动继续','24.5 秒'],['完成轮次','2']],pain:false,comparable:false,stopStart:true}}};
+  const requestReview = body=>fetch(`${base}/api/coach`,{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${secret}`},body:JSON.stringify(body)});
+  assert.equal((await requestReview(reviewRequest)).status,200);
+  const privateFact = structuredClone(reviewRequest);
+  privateFact.context.review.facts.push(['训练备注','个人记录']);
+  assert.equal((await requestReview(privateFact)).status,400);
+  assert.equal((await requestReview({...reviewRequest,conversation:goodRequest.conversation})).status,400);
 
   const rawLeak=structuredClone(goodRequest);
   rawLeak.context.events=[{type:'AROUSAL_LEVEL_CHANGED',level:7}];

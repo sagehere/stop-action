@@ -12,7 +12,7 @@ let browser;
   const context=await browser.newContext({serviceWorkers:'block'}),page=await context.newPage(),errors=[];
   page.on('pageerror',error=>errors.push(error.message));page.on('dialog',dialog=>dialog.accept());
   await page.goto(base);await page.waitForFunction(()=>document.body.dataset.appReady==='true');
-  await page.locator('#closeRehearsal').click();await page.locator('#startTraining').click();await page.locator('#continueCheckin').click();await page.locator('#skipModule').click();await page.locator('#explicitFinish').click();await page.locator('#saveReview').click();await page.waitForSelector('#summary.active');await page.locator('#summaryDone').click();
+  await page.locator('#startTraining').click();await page.locator('#continueCheckin').click();await page.locator('#explicitFinish').click();await page.locator('#saveReview').click();await page.waitForSelector('#summary.active');await page.locator('#summaryDone').click();
   await page.locator('[data-nav="settings"]').first().click();await page.locator('#exportJson').click();await page.locator('#backupMode').selectOption('plain');
   const downloading=page.waitForEvent('download');await page.locator('#backupForm button[type="submit"]').click();const download=await downloading;await fs.mkdir('test-results',{recursive:true});const file=path.resolve('test-results/rollback-v3.json');await download.saveAs(file);const exported=JSON.parse(await fs.readFile(file,'utf8'));
   // Restore into actual historical app code in a clean database and browser context.

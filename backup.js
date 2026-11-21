@@ -5,6 +5,8 @@
   function validateSession(session){
     if(!session||typeof session.id!=='string'||!session.id||session.id.length>150)throw new Error('记录ID无效');
     if(session.schemaVersion!=null&&(!Number.isInteger(session.schemaVersion)||session.schemaVersion<1||session.schemaVersion>5))throw new Error('训练记录版本不支持');
+    if(session.trackingMode!=null&&!['simple','detailed'].includes(session.trackingMode))throw new Error('记录模式无效');
+    if(session.completion&&(!['completed','partial','ended'].includes(session.completion.status)||!Number.isInteger(session.completion.completedModules)||!Number.isInteger(session.completion.plannedModules)||session.completion.completedModules<0||session.completion.completedModules>session.completion.plannedModules||session.completion.plannedModules>20))throw new Error('完成状态无效');
     for(const key of ['events','cycles','revisions','moduleResults'])if(session[key]!=null&&(!Array.isArray(session[key])||session[key].length>100000))throw new Error('记录数组无效：'+key);
     for(const key of ['events','revisions','moduleResults'])for(const row of session[key]||[]){if(!row||typeof row!=='object'||Array.isArray(row))throw new Error('记录条目无效：'+key);if(key==='events'){if(row.type!=null&&typeof row.type!=='string')throw new Error('事件类型无效');for(const field of ['elapsedMs','at'])if(row[field]!=null&&(!Number.isFinite(row[field])||row[field]<0))throw new Error('事件时间无效');}}
     for(const key of ['createdAt','endedAt','startedAt','activeAccumulatedMs','checkpointAt','pausedAt'])if(session[key]!=null&&(!Number.isFinite(session[key])||session[key]<0))throw new Error('记录时间无效');
@@ -14,7 +16,7 @@
     if(session.currentCycle){if(typeof session.currentCycle!=='object'||Array.isArray(session.currentCycle))throw new Error('恢复阶段无效');for(const key of ['signals'])if(session.currentCycle[key]!=null&&!Array.isArray(session.currentCycle[key]))throw new Error('恢复阶段无效');}
     if(session.programSnapshot)window.LongPlans.validateProgram(session.programSnapshot);
     if(session.review?.control!=null&&(!Number.isFinite(session.review.control)||session.review.control<0||session.review.control>10))throw new Error('评分无效');
-    for(const cycle of session.cycles||[]){if(!cycle||typeof cycle!=='object')throw new Error('循环无效');for(const key of ['stopLevel','resumeLevel'])if(cycle[key]!=null&&(!Number.isFinite(cycle[key])||cycle[key]<0||cycle[key]>9))throw new Error('等级无效');if(cycle.artMs!=null&&(!Number.isFinite(cycle.artMs)||cycle.artMs<0))throw new Error('ART无效');}
+    for(const cycle of session.cycles||[]){if(!cycle||typeof cycle!=='object')throw new Error('循环无效');for(const key of ['stopLevel','resumeLevel'])if(cycle[key]!=null&&(!Number.isFinite(cycle[key])||cycle[key]<0||cycle[key]>9))throw new Error('等级无效');for(const key of ['artMs','manualRecoveryMs'])if(cycle[key]!=null&&(!Number.isFinite(cycle[key])||cycle[key]<0))throw new Error('恢复用时无效');}
     return session;
   }
   function validate(data){
