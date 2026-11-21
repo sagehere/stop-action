@@ -238,6 +238,15 @@
     dialog::backdrop{background:rgba(0,0,0,.75)} dialog label{display:block;margin:12px 0}
     .toolbar{display:flex;gap:8px;align-items:center;margin:10px 0}.toolbar button{width:auto;padding:10px}
     #calendarTools{display:grid;grid-template-columns:36px minmax(0,1fr) 36px 52px;gap:6px} #calendarTools input{min-width:0} #calendarTools button{padding:10px 4px;white-space:nowrap}
+    [hidden]{display:none!important}
+    .simple-training .live-controls{grid-template-columns:1fr}
+    .simple-training .live-controls .primary{min-height:64px}
+    .simple-training .session-main{touch-action:auto}
+    #customTraining{scroll-margin-top:20px}
+    #sessionTimeline{margin:12px 0;line-height:1.6}
+    .week-calendar{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));list-style:none;padding:0;gap:4px}
+    .week-calendar li{font-size:12px;padding:5px 1px;text-align:center;border:1px solid var(--line);border-radius:8px}
+    .week-calendar span{display:block;margin-top:4px;color:var(--muted)}
     @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
   </style>
 </head>
@@ -245,19 +254,19 @@
 <div class="app">
   <main>
     <section id="dashboard" class="view active">
-      <div class="topline"><div><div id="dashboardStage" class="eyebrow">训练计划</div><h1>今日训练</h1></div><div class="pill">v1.0 · Production Deploy</div></div>
+      <div class="topline"><div><div id="dashboardStage" class="eyebrow">训练计划</div><h1>今日训练</h1></div></div>
       <div class="card hero">
         <div id="todayDuration" class="eyebrow">约 15 分钟</div>
         <h2 id="todayTitle">Stop–Start · 控制循环</h2>
         <p id="todayFocus">今天重点：识别兴奋变化，并在高兴奋时主动降档。</p>
         <div id="todayModules" class="modules"></div>
-        <button id="startTraining" class="primary">开始训练</button>
-        <div class="mini-actions"><button id="deferToday" class="secondary">推迟到明天</button><button id="restoreSchedule" class="ghost">恢复安排</button></div>
+        <button id="startTraining" class="primary">开始今日训练</button>
+        <button id="openCustomTraining" class="ghost">自定义训练</button><div class="mini-actions"><button id="deferToday" class="secondary">推迟到明天</button><button id="restoreSchedule" class="ghost">恢复安排</button></div>
       </div>
 
       <div class="section">
-        <div class="section-head"><h2>本周</h2><span class="muted">灵活安排</span></div>
-        <div class="card">
+        <div class="section-head"><h2>本周</h2><span id="weeklyFreeCount" class="muted"></span></div>
+        <div class="card"><p id="weeklyPlanStatus" class="small"></p>
           <div class="progress-row"><span>动停</span><div class="progress"><i id="weekStopBar" style="width:0%"></i></div><b id="weekStop">0/3</b></div>
           <div class="progress-row"><span>正念</span><div class="progress"><i id="weekMindBar" style="width:0%"></i></div><b id="weekMind">0/3</b></div>
           <div class="progress-row"><span>盆底</span><div class="progress"><i id="weekPelvicBar" style="width:0%"></i></div><b id="weekPelvic">0/3</b></div>
@@ -266,13 +275,13 @@
 
       <div class="section">
         <div class="section-head"><h2>最近变化</h2><button class="ghost" style="width:auto;padding:8px 10px" data-nav="insights">查看趋势</button></div>
-        <div class="card metric-line"><div><div class="muted">平均恢复时间</div><div id="dashArt" class="metric-big">暂无</div></div><div id="dashTrend" class="trend">完成一次训练后生成</div></div>
+        <div class="card metric-line"><div><div class="muted">最近一次控制感</div><div id="dashArt" class="metric-big">暂无</div></div><div id="dashTrend" class="trend">完成一次训练后生成</div></div>
       </div>
 
-      <div class="section">
-        <div class="section-head"><h2>训练建议</h2><span class="muted">确认后应用</span></div>
+      <details class="section">
+        <summary>更多训练建议</summary>
         <div id="adaptiveCard" class="card adaptive"><div class="muted">正在读取近期训练数据…</div></div>
-      </div>
+      </details>
 
       <p class="safety">本工具用于行为训练和自我记录，不用于诊断疾病。出现持续疼痛、射精疼痛、明显泌尿症状或近期性功能突然变化时，应暂停训练并考虑专业评估。</p>
     </section>
@@ -291,17 +300,17 @@
         <div id="programList"></div>
       </div>
       <div class="section">
-        <div class="section-head"><h2>创建自己的方案</h2><span class="muted">顺序可调整</span></div>
+        <div id="customTraining" class="section-head" tabindex="-1"><h2>自定义训练</h2></div>
         <div class="card">
           <input id="customProgramName" class="text-input" value="我的训练" maxlength="24" aria-label="训练方案名称">
-          <div id="builderModules" style="margin-top:10px"></div>
-          <div class="mini-actions"><button id="saveCustomProgram" class="secondary">保存方案</button><button id="resetBuilder" class="ghost">重置</button></div>
+          <div class="mini-actions"><button id="copyBasicProgram" class="secondary">复制基础方案</button><button id="clearBuilder" class="secondary">从空白创建</button></div><div id="builderModules" style="margin-top:10px"></div>
+          <div class="mini-actions"><button id="runCustomProgram" class="primary">练一次</button><button id="saveCustomProgram" class="secondary">保存为我的方案</button></div>
         </div>
       </div>
     </section>
 
     <section id="insights" class="view">
-      <div id="weeklyReport" class="card"></div><div id="insightFilters" class="card"></div>
+      <div id="weeklyReport" class="card"></div><div class="card"><button id="weeklyReviewWithAI" class="secondary">让 AI 解读本周</button><div id="weeklyAIResult" aria-live="polite"></div></div><div id="insightFilters" class="card"></div>
       <div class="eyebrow">Insights</div><div class="screen-title">数据与复盘</div><p class="muted">只和自己的近期状态比较；方案对比是描述性数据，不代表因果结论。</p>
       <div id="insightTabs" class="insight-tabs">
         <button class="insight-tab active" data-insight-tab="trends">趋势</button>
@@ -373,14 +382,15 @@
     </section>
 
     <section id="checkin" class="view">
-      <div class="eyebrow">开始前 · 约 10 秒</div><div class="screen-title">今天状态怎么样？</div>
-      <div class="card form-card">
-        <div class="field"><div class="field-head"><strong>压力</strong><span id="stressV">4</span></div><input id="stress" type="range" min="0" max="10" value="4"></div>
-        <div class="field"><div class="field-head"><strong>疲劳</strong><span id="fatigueV">3</span></div><input id="fatigue" type="range" min="0" max="10" value="3"></div>
-        <div class="field"><div class="field-head"><strong>盆底紧张</strong><span id="tensionV">3</span></div><input id="tension" type="range" min="0" max="10" value="3"></div>
+      <div id="checkinProgramName" class="screen-title">动停法基础跟练</div><p id="checkinGoal" class="muted"></p><p id="basicSourceLink" class="small" hidden><a href="https://www.sexualhealth.cnwl.nhs.uk/media/pcfn4iip/problems-controlling-when-you-come.pdf" target="_blank" rel="noopener noreferrer">跟练依据 · NHS 动停法手册</a></p>
+      <details id="checkinOptions" class="card form-card"><summary>训练前状态与记录选项</summary>
+        <label id="trackingModeOption"><input id="detailedTracking" type="checkbox"> 精细记录 0–9 兴奋度</label>
+        <div class="field"><div class="field-head"><strong>压力</strong><span id="stressV">未填</span></div><input id="stress" type="range" min="0" max="10" value="4"></div>
+        <div class="field"><div class="field-head"><strong>疲劳</strong><span id="fatigueV">未填</span></div><input id="fatigue" type="range" min="0" max="10" value="3"></div>
+        <div class="field"><div class="field-head"><strong>盆底紧张</strong><span id="tensionV">未填</span></div><input id="tension" type="range" min="0" max="10" value="3"></div>
         <div class="field"><div class="field-head"><strong>有疼痛或明显不适吗？</strong></div><div class="toggle-row"><button class="choice selected" data-pain="false">否</button><button class="choice" data-pain="true">是</button></div><div id="painNotice" class="notice">如果存在明显或持续疼痛，建议暂停本次训练并考虑专业评估。</div></div>
-      </div>
-      <div style="height:14px"></div><button id="continueCheckin" class="primary">继续</button><div style="height:10px"></div><button id="endCheckin" class="secondary">结束并记录当前状态</button><button id="cancelCheckin" class="ghost">取消本次</button>
+      </details>
+      <div style="height:14px"></div><button id="continueCheckin" class="primary">开始</button><button id="openRehearsal" class="ghost">操作演示</button><div style="height:10px"></div><button id="endCheckin" class="secondary">结束并记录当前状态</button><button id="cancelCheckin" class="ghost">取消本次</button>
     </section>
 
     <section id="moduleGuide" class="view full">
@@ -403,14 +413,14 @@
 
     <section id="session" class="view full">
       <div id="sessionShell" class="session-shell">
-        <div class="session-top"><div><div id="phaseLabel" class="phase">兴奋建立</div><div id="phaseSub" class="small">Cycle 1 / 3</div></div><button id="pauseBtn">暂停</button></div>
+        <div class="session-top"><div><div id="phaseLabel" class="phase">兴奋建立</div><div id="phaseSub" class="small">Cycle 1 / 3</div></div><button id="pauseBtn">暂停训练</button></div>
         <div id="gestureSurface" class="session-main">
           <div id="pulse" class="pulse"></div>
           <div id="arousal" class="arousal">2</div>
           <div id="sessionHint" class="session-hint">↑ 上滑增加 · ↓ 下滑降低</div>
           <div id="gestureHint" class="gesture-hint">达到阈值后按提示操作</div>
         </div>
-        <div class="live-controls" id="liveControls"><button id="levelDown" class="secondary" aria-label="等级降低一">－</button><button id="levelUp" class="secondary" aria-label="等级增加一">＋</button><button id="explicitStop" class="primary">Stop · 停止</button><button id="explicitResume" class="primary">Resume · 继续</button><button id="explicitMarker" class="secondary">记录信号</button><button id="explicitFinish" class="ghost">结束并复盘</button></div>
+        <div class="live-controls" id="liveControls"><button id="levelDown" class="secondary" aria-label="等级降低一">－</button><button id="levelUp" class="secondary" aria-label="等级增加一">＋</button><button id="explicitStop" class="primary">停止刺激</button><button id="explicitResume" class="primary">继续练习</button><button id="explicitMarker" class="secondary">记录信号</button><button id="explicitFinish" class="ghost">结束并保存</button></div>
         <div class="session-bottom"><div id="activeTime">00:00</div><div id="cycleDots" class="cycles"></div><div id="recoveryTime" class="timer-right"></div></div>
         <div id="finishSheet" class="finish-sheet"><button id="finishNow" class="primary">结束训练</button><button id="cancelFinish" class="secondary">继续训练</button></div>
         <div id="quickMarkerSheet" class="bottom-sheet" aria-hidden="true">
@@ -440,24 +450,25 @@
     <section id="review" class="view">
       <div class="eyebrow">Session Review</div><div class="screen-title">30 秒复盘</div><p class="muted">只记录感受，不做单次成绩排名。</p>
       <div class="card form-card">
-        <div class="review-group"><h3 id="reviewControlTitle">今天整体控制感</h3><div class="field-head"><span class="muted">0</span><strong id="controlV">6 / 10</strong><span class="muted">10</span></div><input id="control" type="range" min="0" max="10" value="6"></div>
-        <div id="relaxReviewGroup" class="review-group"><h3>Stop 后放松容易吗？</h3><div class="field-head"><span class="muted">0</span><strong id="relaxV">6 / 10</strong><span class="muted">10</span></div><input id="relax" type="range" min="0" max="10" value="6"></div>
+        <div class="review-group"><h3 id="reviewControlTitle">今天整体控制感</h3><div class="field-head"><span class="muted">0</span><strong id="controlV">未评分</strong><span class="muted">10</span></div><input id="control" type="range" min="0" max="10" value="6"></div>
+        <details id="extraReview"><summary>更多观察</summary><div id="relaxReviewGroup" class="review-group"><h3>Stop 后放松容易吗？</h3><div class="field-head"><span class="muted">0</span><strong id="relaxV">6 / 10</strong><span class="muted">10</span></div><input id="relax" type="range" min="0" max="10" value="6"></div>
         <div class="review-group"><h3>训练难度</h3><div class="chips" id="difficulty"><button class="chip">太容易</button><button class="chip selected">合适</button><button class="chip">太困难</button></div></div>
         <div class="review-group"><h3>最明显的信号</h3><div class="chips" id="signals"><button class="chip">呼吸</button><button class="chip">盆底</button><button class="chip">腹部</button><button class="chip">大腿</button><button class="chip">臀部</button><button class="chip">紧张/焦虑</button><button class="chip selected">没有明显信号</button></div></div>
         <div id="awarenessReviewGroup" class="review-group"><h3>有没有提前发现兴奋在升高？</h3><div class="chips" id="awareness"><button class="chip">完全没有</button><button class="chip">一点</button><button class="chip selected">比较明显</button><button class="chip">很早就发现</button></div></div>
+        </details>
       </div>
-      <div style="height:14px"></div><button id="saveReview" class="primary">完成复盘</button><button id="exportPendingReview" class="ghost">导出含当前记录的备份</button>
+      <div style="height:14px"></div><button id="saveReview" class="primary">保存训练</button><button id="exportPendingReview" class="ghost">导出含当前记录的备份</button>
     </section>
 
     <section id="summary" class="view">
-      <div class="eyebrow">完成</div><div class="screen-title">本次训练</div><p id="summaryProgram" class="muted"></p>
+      <div class="eyebrow">已保存</div><div class="screen-title">本次训练</div><p id="summaryProgram" class="muted"></p>
       <div class="summary-grid">
         <div class="summary-metric"><span class="muted">控制循环</span><strong id="sumCycles">0</strong></div>
-        <div class="summary-metric"><span class="muted">平均 ART</span><strong id="sumArt">—</strong></div>
-        <div class="summary-metric"><span class="muted">Level 8</span><strong id="sumOvershoot">0</strong></div>
+        <div class="summary-metric"><span id="sumArtLabel" class="muted">平均恢复用时</span><strong id="sumArt">—</strong></div>
+        <div class="summary-metric"><span id="sumThirdLabel" class="muted">有效时长</span><strong id="sumOvershoot">0</strong></div>
         <div class="summary-metric"><span class="muted">控制感</span><strong id="sumControl">—</strong></div>
       </div>
-      <div class="chart-wrap"><div class="section-head"><h2>兴奋度曲线</h2><span class="small">0–9 主观训练量表</span></div><svg id="chart" viewBox="0 0 480 220" preserveAspectRatio="none"></svg></div>
+      <div class="chart-wrap"><div class="section-head"><h2>训练时间线</h2><span class="small">兴奋度按实际记录显示</span></div><svg id="chart" viewBox="0 0 480 220" preserveAspectRatio="none"></svg></div>
       <div id="betaFeedbackCard" class="card" style="display:none;margin-top:14px">
         <div class="section-head"><h2>实机体验记录</h2><span class="small">可选 · 仅本机</span></div>
         <p class="small">用于改进手势与反馈体验，不记录兴奋度或逐秒训练内容。</p>
@@ -466,6 +477,7 @@
         <div class="field"><div class="field-head"><strong>操作干扰程度</strong><span id="betaInterferenceV">3</span></div><input id="betaInterference" type="range" min="1" max="5" value="3"></div>
         <button id="saveBetaFeedback" class="secondary">保存本次实机反馈</button>
       </div>
+      <div id="sessionTimeline" class="small"></div><div class="card"><button id="reviewWithAI" class="secondary">让 AI 解读本次训练</button><div id="sessionAIResult" aria-live="polite"></div></div><button id="scheduleNextTraining" class="ghost">安排下次训练</button>
       <div id="summaryCoachCard" class="card coach-card" style="margin-top:14px"></div>
       <div id="associateCard" class="card" hidden><label>将自由训练关联到待完成任务<select id="associateTask" class="text-input"></select></label><button id="associateTraining" class="secondary">确认关联</button></div>
       <div class="coach-actions"><button id="summaryOpenCoach" class="secondary">查看完整教练复盘</button><button id="summaryDone" class="primary">回到今日</button></div>
@@ -482,7 +494,7 @@
 <dialog id="backupDialog"><form id="backupForm"><h2>完整备份</h2><label>导出方式<select id="backupMode" class="text-input"><option value="encrypted">密码加密（默认）</option><option value="plain">明文完整备份</option></select></label><label>密码<input id="backupPassword" class="text-input" type="password" autocomplete="new-password"></label><label>再次输入密码<input id="backupPasswordAgain" class="text-input" type="password" autocomplete="new-password"></label><p class="small">至少12个字符。密码丢失无法恢复；密码只在本次操作内使用。</p><p id="backupError" role="alert"></p><button class="primary" type="submit">生成备份</button><button id="closeBackup" class="ghost" type="button">取消</button></form></dialog>
 <dialog id="restoreDialog"><form id="restoreForm"><h2>恢复备份</h2><p id="restoreSummary"></p><label id="restorePasswordLabel">解密密码<input id="restorePassword" type="password" class="text-input" autocomplete="off"></label><label>导入方式<select id="restoreMode" class="text-input"><option value="merge">合并：冲突时保留本机</option><option value="replace">替换：使用备份数据</option></select></label><p id="restoreError" role="alert"></p><button class="primary" type="submit" id="restoreSubmit">校验并预览</button><button id="closeRestore" class="ghost" type="button">取消</button></form></dialog>
 <dialog id="evidenceDialog"><h2>方法依据与局限</h2><div id="evidenceBody"></div><button id="closeEvidence" class="secondary">关闭</button></dialog>
-<dialog id="rehearsalDialog"><h2>操作演练</h2><p id="rehearsalHint" aria-live="polite"></p><strong id="rehearsalLevel">2</strong><div class="live-controls"><button id="demoDown" class="secondary">－</button><button id="demoUp" class="secondary">＋</button><button id="demoStop" class="secondary">Stop</button><button id="demoResume" class="secondary">Resume</button><button id="demoPause" class="secondary">暂停／继续</button><button id="demoMarker" class="secondary">标记</button></div><p class="small">演练不会创建训练记录或进入真实统计。</p><button id="closeRehearsal" class="primary">完成／跳过</button></dialog>
+<dialog id="rehearsalDialog"><h2>操作演练</h2><p id="rehearsalHint" aria-live="polite"></p><strong id="rehearsalLevel">2</strong><div class="live-controls"><button id="demoDown" class="secondary">－</button><button id="demoUp" class="secondary">＋</button><button id="demoStop" class="secondary">停止刺激</button><button id="demoResume" class="secondary">继续练习</button><button id="demoPause" class="secondary">暂停／继续</button><button id="demoMarker" class="secondary">标记</button></div><p class="small">演练不会创建训练记录或进入真实统计。</p><button id="closeRehearsal" class="primary">关闭演示</button></dialog>
 <button id="applyUpdate" class="secondary" hidden style="position:fixed;bottom:100px;z-index:95;max-width:400px;left:50%;transform:translateX(-50%)">新版本已就绪，训练结束后更新</button>
 <script src="db.js"></script>
 <script src="training-core.js"></script>

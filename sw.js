@@ -1,4 +1,4 @@
-const CACHE='stop-action-v20';
+const CACHE='stop-action-v21';
 const ASSETS=['./','./index.html','./db.js','./training-core.js','./content.js','./plans.js','./backup.js','./plan-ui.js','./app.js','./manifest.webmanifest','./icon.svg'];
 const allowed=new Set(ASSETS.map(asset=>new URL(asset,self.location).href));
 self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS))));

@@ -32,8 +32,8 @@
     const container=document.getElementById('scheduleCalendar');if(!container||!bridge)return;
     document.getElementById('calendarMonth').value=month;
     container.innerHTML=['一','二','三','四','五','六','日'].map(d=>`<div class="small" style="text-align:center">${d}</div>`).join('')+P.monthCells(month).map(date=>{
-      const rows=tasks().filter(t=>t.date===date),past=date<P.dateKey(),planned=rows.filter(t=>t.status==='PLANNED').length,done=rows.filter(t=>t.status==='COMPLETED').length,actual=bridge.sessions().filter(s=>!s.simulated&&!s.rehearsal&&s.endedAt&&P.dateKey(new Date(s.endedAt))===date).length;
-      return `<button class="calendar-day ${date===P.dateKey()?'today':''} ${date===selected?'selected':''}" data-date="${date}" style="opacity:${date.startsWith(month)?1:.45}" aria-label="${date}，${rows.length}次安排，${actual}条实际训练记录"><span>${Number(date.slice(-2))}</span><span class="small">${done?'✓ '+done:''}${actual?'<br>记录 '+actual:''}${planned?'<br>'+ (past?'待处理 ':'待练 ')+planned:rows.some(t=>['SKIPPED','CANCELLED'].includes(t.status))?'<br>跳过/取消':''}${!rows.length&&!actual?'<br>休息':''}</span></button>`;
+      const rows=tasks().filter(t=>t.date===date),past=date<P.dateKey(),planned=rows.filter(t=>t.status==='PLANNED'&&!t.lastPartialSessionId).length,partial=rows.filter(t=>t.status==='PLANNED'&&t.lastPartialSessionId).length,done=rows.filter(t=>t.status==='COMPLETED').length,actual=bridge.sessions().filter(s=>!s.simulated&&!s.rehearsal&&s.endedAt&&P.dateKey(new Date(s.endedAt))===date).length;
+      return `<button class="calendar-day ${date===P.dateKey()?'today':''} ${date===selected?'selected':''}" data-date="${date}" style="opacity:${date.startsWith(month)?1:.45}" aria-label="${date}，${rows.length}次安排，${actual}条实际训练记录"><span>${Number(date.slice(-2))}</span><span class="small">${done?'✓ '+done:''}${partial?'<br>部分 '+partial:''}${actual?'<br>记录 '+actual:''}${planned?'<br>'+ (past?'待处理 ':'待练 ')+planned:rows.some(t=>['SKIPPED','CANCELLED'].includes(t.status))?'<br>跳过/取消':''}${!rows.length&&!actual?'<br>休息':''}</span></button>`;
     }).join('');
   }
   function btn(action,label,extra=''){return `<button type="button" class="secondary" data-action="${action}" ${extra}>${label}</button>`;}
@@ -47,7 +47,7 @@
   function render(){
     if(!bridge)return;renderCalendar();const current=active(),rows=tasks().filter(t=>t.date===selected),history=bridge.sessions().filter(s=>!s.simulated&&!s.rehearsal&&P.dateKey(new Date(s.endedAt||s.createdAt))===selected);
     let html=`<div class="card"><h2>长期主计划</h2><p class="small">${esc(C.guidance.plan.text)}</p>${current?`<strong>${esc(current.name)}</strong><p class="small">${current.startDate} 起 · ${current.templateSnapshot.weeks.length}周 · 已确认第${current.confirmedWeek+1}周阶段</p><div class="mini-actions">${btn('pausePlan','暂停主计划')}${btn('archivePlan','归档主计划')}${btn('shiftPlan','从今天重新安排')}${btn('editActive','编辑未来安排')}</div>${P.phaseDue(current)?`<div class="engine-note">阶段复盘：未确认前沿用当前阶段，不自动增加练习量。</div><div class="mini-actions">${btn('advance','确认下一阶段')}${btn('repeat','重复当前阶段')}</div>`:''}`:'<p class="muted">没有正在执行的主计划。选择模板或恢复暂停的计划。</p>'}</div>`;
-    html+=`<div class="card"><h2>${selected} · 日期详情</h2>${rows.length?rows.map(t=>`<div class="program-card" ${t.status==='PLANNED'?'draggable="true" data-drag-task="'+esc(t.id)+'"':''}><strong>${esc(t.programSnapshot?.name||'训练')}</strong><div class="small">${esc(t.instance.name)} · ${esc(t.status==='PLANNED'?(t.date<P.dateKey()?'逾期待处理':'待完成'):({COMPLETED:'已完成',SKIPPED:'已跳过',CANCELLED:'已取消'}[t.status]))}</div>${t.status==='PLANNED'&&(t.instance.status==='ACTIVE'||t.instance.free)?`<div class="mini-actions">${btn('startTask','开始','data-task="'+esc(t.id)+'"')}${btn('moveTask','改期','data-task="'+esc(t.id)+'"')}${btn('editTask','编辑模块','data-task="'+esc(t.id)+'"')}${btn('skipTask','跳过','data-task="'+esc(t.id)+'"')}${btn('cancelTask','取消','data-task="'+esc(t.id)+'"')}</div>`:''}${t.completedSessionId?btn('viewSession','查看记录','data-session="'+esc(t.completedSessionId)+'"'):''}</div>`).join(''):'<p class="muted">休息或自由安排。</p>'}${history.filter(s=>!rows.some(t=>t.completedSessionId===s.id)).map(s=>btn('viewSession','自由训练 · '+esc(s.programSnapshot?.name||'训练'),'data-session="'+esc(s.id)+'"')).join('')}<label>添加单次方案<select id="dateProgram" class="text-input">${bridge.programs().map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</select></label>${btn('addTask','安排在所选日期')}</div>`;
+    html+=`<div class="card"><h2>${selected} · 日期详情</h2>${rows.length?rows.map(t=>`<div class="program-card" ${t.status==='PLANNED'?'draggable="true" data-drag-task="'+esc(t.id)+'"':''}><strong>${esc(t.programSnapshot?.name||'训练')}</strong><div class="small">${esc(t.instance.name)} · ${esc(t.status==='PLANNED'?(t.lastPartialSessionId?'部分完成':t.date<P.dateKey()?'逾期待处理':'待完成'):({COMPLETED:'已完成',SKIPPED:'已跳过',CANCELLED:'已取消'}[t.status]))}</div>${t.status==='PLANNED'&&(t.instance.status==='ACTIVE'||t.instance.free)?`<div class="mini-actions">${btn('startTask','开始','data-task="'+esc(t.id)+'"')}${btn('moveTask','改期','data-task="'+esc(t.id)+'"')}${btn('editTask','编辑模块','data-task="'+esc(t.id)+'"')}${btn('skipTask','跳过','data-task="'+esc(t.id)+'"')}${btn('cancelTask','取消','data-task="'+esc(t.id)+'"')}</div>`:''}${(t.completedSessionId||t.lastPartialSessionId)?btn('viewSession','查看记录','data-session="'+esc(t.completedSessionId||t.lastPartialSessionId)+'"'):''}</div>`).join(''):'<p class="muted">休息或自由安排。</p>'}${history.filter(s=>!rows.some(t=>t.completedSessionId===s.id||t.lastPartialSessionId===s.id)).map(s=>btn('viewSession','自由训练 · '+esc(s.programSnapshot?.name||'训练'),'data-session="'+esc(s.id)+'"')).join('')}<label>添加单次方案<select id="dateProgram" class="text-input">${bridge.programs().map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</select></label>${btn('addTask','安排在所选日期')}</div>`;
     html+=`<div class="card"><h2>长期计划模板库</h2>${allTemplates().map(t=>`<div class="program-card"><strong>${esc(t.name)}</strong><p class="small">${t.weeks.length}周 · ${t.builtin?'内置，可编辑副本':'个人模板'} · 内容v${esc(t.contentVersion||'1')}</p><div class="mini-actions">${btn('editTemplate','预览／编辑副本','data-template="'+esc(t.id)+'"')}${btn('exportTemplate','导出模板','data-template="'+esc(t.id)+'"')}${!t.builtin?btn('archiveTemplate','归档模板','data-template="'+esc(t.id)+'"'):''}</div></div>`).join('')}<div class="mini-actions">${btn('newTemplate','创建1–52周计划')}${btn('importTemplate','导入模板')}</div><input id="templateFile" type="file" accept=".json" hidden></div>`;
     const others=instances.filter(p=>p.status!=='ACTIVE');if(others.length)html+=`<div class="card"><h2>暂停与历史计划</h2>${others.map(p=>`<div class="program-card">${esc(p.name)} · ${p.status==='PAUSED'?'已暂停':'已归档'}${p.status==='PAUSED'?btn('resumePlan','恢复','data-plan="'+esc(p.id)+'"'):''}${btn('saveInstance','保存为个人模板','data-plan="'+esc(p.id)+'"')}</div>`).join('')}</div>`;
     if(draft)html+=editor();
@@ -103,7 +103,7 @@
     if(action==='repeat'){if(bridge.isTraining())throw new Error('请先结束当前训练');if(confirm('重复已确认阶段一周，未来待练安排顺延；历史不移动。')){P.repeatWeek(current);await save();}return;}
     if(action==='shiftPlan'){if(bridge.isTraining())throw new Error('请先结束当前训练');const changes=P.shiftPreview(current,P.dateKey());if(changes.length&&confirm('未来安排整体顺延，保留间隔：\n'+changes.map(x=>x.from+' → '+x.to).join('\n'))){changes.forEach(x=>current.tasks.find(t=>t.id===x.id).date=x.to);await save();}return;}
     if(action==='editActive'){draft=P.clone(current.templateSnapshot);draft.id=P.id('template');draft.name+=' · 草稿';editorWeek=current.confirmedWeek;draftPlanId=current.id;draftTaskId=null;}
-    if(action==='startTask'){bridge.launch(taskProgram(task),task);return;}
+    if(action==='startTask'){await bridge.launch(taskProgram(task),task);return;}
     if(action==='moveTask'){const date=prompt('新日期（YYYY-MM-DD，可跨月）',task.date);if(date){P.parseDate(date);task.date=date;await save();}return;}
     if(action==='skipTask'||action==='cancelTask'){task.status=action==='skipTask'?'SKIPPED':'CANCELLED';await save();return;}
     if(action==='editTask'){draft=P.makeTemplate(1);draft.name='任务模块草稿';draft.weeks[0].program=P.clone(task.programSnapshot);editorWeek=0;draftTaskId=task.id;draftPlanId=null;}
@@ -127,11 +127,29 @@
     instance.tasks.push({schemaVersion:1,id:P.id('task'),planId:instance.id,weekIndex:currentWeekSafe(instance,date),date,programId:program.id,programSnapshot:P.clone(program),userEdited:true,status:'PLANNED',createdAt:Date.now()});await save();
   }
   function currentWeekSafe(instance,date){return Math.max(0,Math.min(instance.templateSnapshot.weeks.length-1,Math.floor(P.dayDistance(instance.startDate,date)/7)));}
-  function markCompleted(taskId,sessionId){for(const p of instances){const task=p.tasks.find(t=>t.id===taskId);if(task){task.status='COMPLETED';task.completedSessionId=sessionId;return;}}}
-  async function removeSession(id){for(const p of instances)p.tasks.forEach(t=>{if(t.completedSessionId===id){t.status='PLANNED';delete t.completedSessionId;}});await save();}
-  async function associate(sessionId,taskId){markCompleted(taskId,sessionId);await save();}
+  function markCompleted(taskId,sessionId,status='completed'){
+    const task = instances.flatMap(plan=>plan.tasks).find(item=>item.id===taskId);
+    if (!task || task.status !== 'PLANNED') return;
+    if (status === 'partial') task.lastPartialSessionId = sessionId;
+    if (status === 'completed') {
+      task.status = 'COMPLETED';
+      task.completedSessionId = sessionId;
+      delete task.lastPartialSessionId;
+    }
+  }
+  function withoutSession(id){
+    const snapshot = P.clone(meta());
+    for (const task of snapshot.longPlans.flatMap(plan=>plan.tasks)) {
+      if (task.lastPartialSessionId === id) delete task.lastPartialSessionId;
+      if (task.completedSessionId === id) {
+        task.status = 'PLANNED';
+        delete task.completedSessionId;
+      }
+    }
+    return snapshot;
+  }
   async function defer(){const task=todayTask();if(task){task.date=P.addDays(task.date,1);await save();}}
   function reset(){templates=[];instances=[];activeId=null;draft=null;preview=null;render();}
   function hydrate(values){templates=values.longTemplates||[];instances=values.longPlans||[];activeId=values.activeLongPlanId||null;draft=null;preview=null;render();}
-  window.LongPlanUI={init,render,renderCalendar,meta,active,tasks,todayTask,stage,taskProgram,markCompleted,removeSession,associate,defer,addTask,reset,hydrate};
+  window.LongPlanUI={init,render,renderCalendar,meta,active,tasks,todayTask,stage,taskProgram,markCompleted,withoutSession,defer,addTask,reset,hydrate};
 })();

@@ -36,6 +36,14 @@
     }
     copy.phaseRemainingSec-=seconds;return {state:copy,done:false};
   }
-  function conditionKey(session){return JSON.stringify([session.clockVersion||1,session.programSnapshot?.modules||[],session.promptModeSnapshot||'full',session.planSnapshot?.stageName||'',session.stopThreshold,session.resumeThreshold]);}
-  window.TrainingCore={elapsed,checkpoint,recover,median,guidedStep,conditionKey};
+  function completion(session) {
+    const modules = session.programSnapshot?.modules || [];
+    const results = session.moduleResults || [];
+    const done = results.filter(result => result.status === 'COMPLETED').length;
+    const hasActivity = done > 0 || session.cycles?.length > 0 || elapsed(session) > 0;
+    return {status:modules.length && done === modules.length ? 'completed' : hasActivity ? 'partial' : 'ended',
+      completedModules:done, plannedModules:modules.length};
+  }
+  function conditionKey(session){return JSON.stringify([session.clockVersion||1,session.programSnapshot?.modules||[],session.trackingMode||'detailed',session.trackingMode==='simple'?'':session.promptModeSnapshot||'full',session.planSnapshot?.stageName||'',session.trackingMode==='simple'?null:session.stopThreshold,session.trackingMode==='simple'?null:session.resumeThreshold]);}
+  window.TrainingCore={elapsed,checkpoint,recover,median,guidedStep,completion,conditionKey};
 })();
