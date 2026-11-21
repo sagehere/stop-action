@@ -1,10 +1,12 @@
 (() => {
   'use strict';
-  const version = '1.1.0', checkedAt = '2026-10-03';
+  const version = '1.2.0', checkedAt = '2026-10-03';
   const sources = {
     eau: { title:'EAU Sexual and Reproductive Health — Disorders of Ejaculation', institution:'European Association of Urology', year:2026, url:'https://uroweb.org/guidelines/sexual-and-reproductive-health/chapter/disorders-of-ejaculation', supports:'心理教育、行为方法和正念可用于辅助；单独干预证据有限，长期效果不确定。' },
     nhsStopStart: { title:'The Stop-Start Technique', institution:'CNWL NHS Sexual Health', year:null, checkedAt:'2026-11-21', url:'https://www.sexualhealth.cnwl.nhs.uk/media/pcfn4iip/problems-controlling-when-you-come.pdf', supports:'在仍能控制时停止，待兴奋回落后再继续。手册所述时间用于参考。' },
     nhs: { title:'Ejaculation problems', institution:'NHS', year:null, url:'https://www.nhs.uk/conditions/ejaculation-problems/', supports:'介绍动停方法；持续困扰需要专业评估。' },
+    lubricant: { title:'Lubricant', institution:'Open Doors NHS Sexual Health', year:null, checkedAt:'2026-11-21', url:'https://www.opendoors.nhs.uk/content/lubricant', supports:'润滑剂可减少干涩与摩擦；这是舒适度建议。' },
+    condoms: { title:'Condoms', institution:'NHS', year:null, checkedAt:'2026-11-21', url:'https://www.nhs.uk/contraception/methods-of-contraception/condoms/', supports:'乳胶安全套应配合水性或硅基润滑剂，避免油性润滑剂。' },
     breath: { title:'Breathing exercises for stress', institution:'NHS', year:2026, url:'https://www.nhs.uk/mental-health/self-help/guides-tools-and-activities/breathing-exercises-for-stress/', supports:'舒适、温和、不强迫的呼吸练习用于压力管理，不能外推为射精控制疗效。' },
     pelvic: { title:'Male Pelvic Floor Exercises', institution:'University Hospitals Sussex NHS Foundation Trust', year:null, url:'https://www.uhsussex.nhs.uk/resources/male-pelvic-floor-exercises/', supports:'识别肌肉、保持呼吸、避免臀部腹部大腿代偿；资料主要面向尿控，不移植训练剂量。' },
     pain: { title:'Male Chronic Pelvic Pain', institution:'Cambridge University Hospitals NHS Foundation Trust', year:2021, url:'https://media.cuh.nhs.uk/documents/Male_chronic_pelvic_pain_v3_Nov_2021.pdf', supports:'放松和协调同样重要，避免向下用力；疼痛情境需要个别评估。' },
@@ -29,6 +31,18 @@
     recovery: '自然呼吸，等兴奋回落。感觉可以时，再继续练习。',
     timing: '可参考手册的约 20–30 秒，按自己的感受决定何时继续。'
   };
+  const preparation = {
+    stopStart: [
+      { label:'刺激方式', text:'动停练习需要能随时停止的身体刺激。自己用手即可，无需伴侣、器具或影音素材。' },
+      { label:'润滑按需', text:'有干涩或摩擦感时，可用水性润滑剂减轻摩擦。出现疼痛或持续不适，请停止本次练习。' }
+    ],
+    stopStartAfterWarmup: '等屏幕进入「动停」模块再开始刺激。前面的模块按各自提示练习。',
+    other: { label:'准备姿势', text:'找一个舒服、能自然呼吸的姿势。本次无需性刺激或润滑。' },
+    pelvic: { label:'盆底练习', text:'保持自然呼吸，放松时不要向下用力。' },
+    comfort: '开始前若有疼痛或明显不适，可结束并记录当前状态。疼痛持续或反复出现时，建议寻求专业评估。',
+    partnerAndCondoms: '若与伴侣练习，先确认双方同意并约定停止信号。使用乳胶安全套时选水性或硅基润滑剂，避免油性润滑剂。',
+    sourceIds: ['nhsStopStart','lubricant','condoms']
+  };
   const guidance = {
     checkin:{ text:'评分只记录今天的感受，不作诊断。明显不适时可以结束并保存，无需完成原计划。', sourceIds:['eau','pain'] },
     recovery:{ text:'恢复不需要赶时间。ART记录停止到主观回到可控水平的有效时间，不能单独说明疗效。', sourceIds:[], kind:'产品指标说明' },
@@ -39,5 +53,5 @@
     plan:{ text:'4/8/12周是可编辑的练习组织周期。每周两次和初始循环数是产品默认值，并非经过验证的完整疗程。', sourceIds:['eau','trial','rehab'], kind:'产品安排及研究边界' }
   };
   const policy = '仅解释记录与觉察过程。0–9为个人主观量表，ART不是临床疗效指标。不得诊断或保证延长/治愈；不得建议修改阈值、周次、练习量或处方。疼痛时优先建议暂停与专业评估，不把疼痛称为正常训练反应。不把4/8/12周模板称为验证疗程，不外推专业盆底康复研究。';
-  window.TrainingContent = { version, checkedAt, sources, modules, basicProgram, basicSteps, guidance, policy };
+  window.TrainingContent = { version, checkedAt, sources, modules, basicProgram, basicSteps, preparation, guidance, policy };
 })();

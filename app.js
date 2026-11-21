@@ -10,7 +10,7 @@
   const DEFAULT_STOP_THRESHOLD = 7;
   const DEFAULT_RESUME_THRESHOLD = 5;
   const DAY_MS = 86400000;
-  const APP_VERSION = '2.2.0';
+  const APP_VERSION = '2.2.1';
   const Core = window.TrainingCore, Content = window.TrainingContent, Long = window.LongPlanUI, Backup = window.TrainingBackup;
   let acceptedParameters={stopThreshold:7,resumeThreshold:5},parameterHistory=[],saveInFlight=false,guideLastElapsed=0,checkpointTimer=null,wakeLock=null,waitingWorker=null,moduleActionReadyAt=0;
   let pendingRestore=null,restorePreview=null,updateRequested=false,insightFilter={plan:'',stage:'',program:'',mode:'',clock:'2',from:'',to:''};
@@ -1103,12 +1103,43 @@
 
   function isSimple(session = currentSession) { return session?.trackingMode === 'simple'; }
 
+  function renderPreparation(modules) {
+    const preparation = Content.preparation;
+    const stopIndex = modules.findIndex(module => module.exerciseId === 'stop_start');
+    const hasStop = stopIndex >= 0;
+    const items = hasStop ? [...preparation.stopStart] : [preparation.other];
+    if (modules.some(module => ['pelvic_coordination', 'pelvic_release'].includes(module.exerciseId))) {
+      items.push(preparation.pelvic);
+    }
+    $('#preparationItems').innerHTML = items.map(({label,text}) =>
+      `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(text)}</dd></div>`
+    ).join('');
+    $('#preparationTiming').textContent = preparation.stopStartAfterWarmup;
+    $('#preparationTiming').hidden = stopIndex <= 0;
+    $('#preparationComfort').textContent = preparation.comfort;
+    $('#preparationDetails').open = false;
+    $('#preparationDetails').hidden = !hasStop;
+    $('#preparationPartner').textContent = preparation.partnerAndCondoms;
+    $('#preparationSources').innerHTML = preparation.sourceIds.map(id => {
+      const source = Content.sources[id];
+      const label = {nhsStopStart:'NHS 动停法手册', lubricant:'NHS 润滑说明', condoms:'NHS 安全套说明'}[id];
+      return `<a href="${escapeHtml(source.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`;
+    }).join('');
+    $('#openRehearsal').hidden = !hasStop;
+  }
+
+  function renderCheckinPain() {
+    $('#painNotice').style.display = pain ? 'block' : 'none';
+    $('#continueCheckin').textContent = pain ? '结束并记录当前状态' : '开始训练';
+    $('#endCheckin').hidden = pain;
+  }
+
   function renderCheckin() {
     const snapshot = currentSession.programSnapshot;
     const draft = currentSession.checkin || {};
     $('#checkinProgramName').textContent = snapshot.name;
     $('#checkinGoal').textContent = snapshot.description || snapshot.modules.map(moduleLabel).join(' · ');
-    $('#basicSourceLink').hidden = snapshot.id !== Content.basicProgram.id;
+    renderPreparation(snapshot.modules);
     $('#checkinOptions').open = !!currentSession.checkin;
     $('#trackingModeOption').hidden = !hasExercise(currentSession, 'stop_start');
     $('#detailedTracking').checked = !isSimple();
@@ -1118,7 +1149,7 @@
     }
     pain = draft.pain === true;
     $$('[data-pain]').forEach(button => button.classList.toggle('selected', String(draft.pain) === button.dataset.pain));
-    $('#painNotice').style.display = pain ? 'block' : 'none';
+    renderCheckinPain();
   }
 
   function currentModule() { return currentSession?.programSnapshot?.modules?.[currentSession.moduleIndex] || null; }
@@ -2085,7 +2116,7 @@
       currentSession.checkin ||= {};
       currentSession.checkin.pain = pain;
       $$('[data-pain]').forEach(x=>x.classList.toggle('selected',x===button));
-      $('#painNotice').style.display=pain?'block':'none';
+      renderCheckinPain();
       persistCurrentSoon();
     }));
     $('#continueCheckin').addEventListener('click',()=>{
