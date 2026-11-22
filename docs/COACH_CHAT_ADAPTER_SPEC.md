@@ -105,6 +105,10 @@ POST https://api.openai.com/v1/responses
 
 模型由 `OPENAI_MODEL` 配置，浏览器提交的 model 只有位于 `ALLOWED_MODELS` 中才会被接受。
 
+模型列表从教练端点下的 `GET /api/coach/models` 获取。此接口复用 Relay 的来源与 Bearer Token 检查，以 `data: [{id}]` 返回 `ALLOWED_MODELS` 中可选的模型。
+
+自建适配器可采用同样的子路径，也可在界面中填写同源列表路径，例如 `/v1/models`。列表请求只发送临时令牌，供浏览器选择模型。教练对话继续使用本文的消息协议。
+
 ## Token
 
 有两层 Token：

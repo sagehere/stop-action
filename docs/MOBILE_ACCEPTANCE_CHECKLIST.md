@@ -91,11 +91,7 @@
 - [ ] 导入含模拟记录的旧备份后，Coach 只读取真实训练记录。
 
 ### C2. Coach 隐私
-- [ ] “查看最小化结构化上下文”中没有原始 Event Stream。
-- [ ] 不包含 Session ID。
-- [ ] 不包含精确 Session 时间。
-- [ ] 不包含 Revision Log。
-- [ ] “复制 AI 上下文”只能由用户主动触发。
+- [ ] 验证外部 AI 请求中的训练摘要。检查原始事件、Session ID、精确训练时间和修订日志是否被排除。
 
 ### C3. Coach 交互
 - [ ] Summary 页出现简短 Coach 复盘。
@@ -122,8 +118,8 @@
 ## Phase 4.7 Relay 实机验收
 
 - [ ] 用 `MOCK_OPENAI=1 node relay/server.mjs` 启动后，手机可从同一局域网/HTTPS 测试地址加载 PWA。
-- [ ] 「我的 → AI 教练 → 使用本站连接」可填入 `/api/coach` 对应绝对地址。
-- [ ] “检测 Relay”能显示 Relay 在线和 Mock/OpenAI 上游状态。
+- [ ] 「我的 → AI 教练 → 连接地址、模型和令牌」可手动填写 `/api/coach` 的绝对地址。
+- [ ] 「拉取模型列表」可选择允许的模型。列表不可用时仍可手动填写模型。
 - [ ] 未勾选外部发送授权时无法启用外部 Coach。
 - [ ] 配置 `RELAY_BEARER_TOKEN` 后，错误 Token 会收到 401；正确 Token 可调用。
 - [ ] 外部 Coach 失败时 UI 能回退到本地 Coach，不丢失本地训练记录。
