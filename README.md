@@ -113,7 +113,7 @@ Dockge 默认的 Stack 目录通常类似：
 在 Dockge 的 ENV 编辑器中填入：
 
 ~~~dotenv
-STOP_ACTION_IMAGE=ghcr.io/sagehere/stop-action:latest
+STOP_ACTION_IMAGE=ghcr.io/sagehere/stop-action:sha-3e38df2
 
 APP_BIND=127.0.0.1
 APP_PORT=8787
@@ -121,7 +121,7 @@ APP_PORT=8787
 ALLOWED_ORIGINS=https://training.example.com
 
 OPENAI_MODEL=gpt-5.6-luna
-ALLOWED_MODELS=gpt-5.6-luna
+ALLOWED_MODELS=
 OPENAI_BASE_URL=https://api.openai.com/v1
 
 RATE_LIMIT_WINDOW_MS=60000
@@ -135,6 +135,8 @@ UPSTREAM_RETRY_COUNT=1
 ~~~
 
 其中最重要的是 **APP_BIND、APP_PORT、ALLOWED_ORIGINS**。
+
+本示例固定到 v2.2.3。Dockge 的 ENV 可以覆盖 Compose 默认镜像。请在自己的 Stack 中把示例域名和模型 ID 改为实际值。将 `ALLOWED_MODELS` 留空可让模型列表跟随 `OPENAI_MODEL`，若要列出多个模型，填写用英文逗号分隔的模型 ID。
 
 #### APP_BIND 怎么选
 
@@ -216,26 +218,19 @@ mkdir -p secrets
 chmod 700 secrets
 ~~~
 
-如果暂时不用外部 AI Coach，也需要创建两个空文件：
+创建两个挂载文件。已有文件可以继续使用：
 
 ~~~bash
-: > secrets/openai_api_key.txt
-: > secrets/relay_bearer_token.txt
+touch secrets/openai_api_key.txt secrets/relay_bearer_token.txt
 chmod 644 secrets/openai_api_key.txt secrets/relay_bearer_token.txt
 ~~~
 
-如果要启用外部 AI Coach：
+使用此 Stack 提供 AI 教练时，用本地编辑器把上游 API Key 填入 `secrets/openai_api_key.txt`。如果 AI 接口对公网开放，为 Relay 配置 Bearer Token。以下命令仅为当前为空的令牌文件生成随机令牌：
 
 ~~~bash
-printf '%s' 'YOUR_OPENAI_API_KEY' > secrets/openai_api_key.txt
-chmod 644 secrets/openai_api_key.txt
-~~~
-
-可选地为 Relay 生成 Bearer Token：
-
-~~~bash
-openssl rand -hex 32 > secrets/relay_bearer_token.txt
-chmod 644 secrets/relay_bearer_token.txt
+if [ ! -s secrets/relay_bearer_token.txt ]; then
+  openssl rand -hex 32 > secrets/relay_bearer_token.txt
+fi
 ~~~
 
 这里采用 **目录 700 + 文件 644**：宿主机普通用户无法穿过 `secrets/` 目录，但容器内非 root 用户仍能读取 bind-mounted Secret。不要把真实 API Key 或 Token 写入 compose.yaml、.env、README 或 Git 仓库。
@@ -305,11 +300,11 @@ training.example.com {
 建议逐项确认：
 
 - 首页能正常打开。
-- 我的 → 数据存储 显示 IndexedDB 正常。
+- 「我的 → 备份与数据」显示训练次数，可导出备份。
 - 可以开始并完成一次训练。
 - 刷新网页后训练记录仍存在。
 - PWA 可以安装。
-- 如果启用外部 AI，在「我的 → AI 教练 → 连接地址、模型和令牌」手动填写教练端点，再拉取模型并保存授权。
+- 如果启用本 Stack 的 AI 教练，在「我的 → AI 教练 → 连接地址、模型和令牌」手动填入教练地址，例如 `https://training.example.com/api/coach`。用 Relay 的 Bearer Token 填「临时令牌」，拉取模型后选定模型并保存授权。
 - 实机测试 JSON / CSV 可以正常导出。
 
 ### 9. 在 Dockge 中更新
@@ -317,10 +312,10 @@ training.example.com {
 默认镜像：
 
 ~~~text
-ghcr.io/sagehere/stop-action:latest
+ghcr.io/sagehere/stop-action:sha-3e38df2
 ~~~
 
-GitHub Actions 发布新镜像后，在 Dockge 中执行 **Update / Pull / Redeploy** 即可。也可以使用终端：
+GitHub Actions 发布新镜像后，把 Dockge ENV 中的 `STOP_ACTION_IMAGE` 改成要部署的标签，再执行 **Pull / Redeploy**。如果你在测试环境使用 `latest`，直接拉取并重新部署即可。也可以使用终端：
 
 ~~~bash
 docker compose pull
@@ -337,7 +332,7 @@ docker compose images
 例如：
 
 ~~~dotenv
-STOP_ACTION_IMAGE=ghcr.io/sagehere/stop-action:v1.0.0
+STOP_ACTION_IMAGE=ghcr.io/sagehere/stop-action:sha-3e38df2
 ~~~
 
 或者：
@@ -418,7 +413,8 @@ docker login ghcr.io
 检查：
 
 - secrets/openai_api_key.txt 是否为空。
-- OPENAI_MODEL 与 ALLOWED_MODELS 是否一致。
+- `ALLOWED_MODELS` 留空时会列出 `OPENAI_MODEL`。填写了列表时，确认它包含需要在浏览器选择的模型 ID。
+- 模型列表返回 401 时，核对浏览器「临时令牌」和 Relay 的 Bearer Token。
 - ALLOWED_ORIGINS 是否与实际 HTTPS 域名完全一致。
 - 修改 Secret 后是否重新 Deploy。
 - 反代是否允许 /api/coach、/api/coach/models、/api/coach/ready、/api/health、/api/ready。
