@@ -448,7 +448,7 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, {
       ok: true,
       service: 'coach-relay',
-      version: '2.2.1',
+      version: '2.2.2',
       upstream: MOCK_OPENAI ? 'mock' : 'openai-responses',
       modelConfigured: MOCK_OPENAI || !!OPENAI_API_KEY,
       model: OPENAI_MODEL,
@@ -458,7 +458,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/api/ready') {
     try { const assets=['index.html','app.js','db.js','content.js','training-core.js','plans.js','plan-ui.js','backup.js','manifest.webmanifest','icon.svg','sw.js'];const results=await Promise.all(assets.map(file=>stat(path.join(STATIC_ROOT,file))));if(results.some(file=>!file.isFile()))throw new Error('Missing runtime file'); }
     catch { return json(res, 503, { ok: false, service: 'stop-action', error: 'assets_unavailable' }); }
-    return json(res, 200, { ok: true, service: 'coach-relay', coreReady: true, version: '2.2.1', modelConfigured: MOCK_OPENAI || !!OPENAI_API_KEY }, corsHeaders(req));
+    return json(res, 200, { ok: true, service: 'coach-relay', coreReady: true, version: '2.2.2', modelConfigured: MOCK_OPENAI || !!OPENAI_API_KEY }, corsHeaders(req));
   }
   if (req.method === 'GET' && url.pathname === '/api/coach/ready') {
     const limiter = await rateLimiter.health();
@@ -467,7 +467,7 @@ const server = http.createServer(async (req, res) => {
     return json(res, ok ? 200 : 503, {
       ok,
       service: 'coach-relay',
-      version: '2.2.1',
+      version: '2.2.2',
       modelConfigured,
       rateLimiter: { ok: limiter.ok, backend: limiter.backend, degraded: !!limiter.degraded },
     }, corsHeaders(req));

@@ -39,7 +39,7 @@
       };
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error || new Error('Unable to open IndexedDB'));
-      request.onblocked = () => {const status=document.getElementById('dbStatus');if(status)status.textContent='数据库升级受阻，请关闭其他标签页后重试';window.dispatchEvent(new CustomEvent('training-db-blocked'));};
+      request.onblocked = () => {const status=document.getElementById('dbStatus');if(status){status.textContent='数据库升级受阻，请关闭其他标签页后重试';status.hidden=false;}window.dispatchEvent(new CustomEvent('training-db-blocked'));};
     });
   }
 
@@ -126,10 +126,15 @@
   }
 
   function deleteSession(id, meta = {}) {
+    return deleteSessions([id], meta);
+  }
+
+  function deleteSessions(ids, meta = {}) {
     const values = structuredClone(meta);
     return enqueueWrite(async () => {
       const tx = db.transaction([SESSION_STORE, KV_STORE], 'readwrite');
-      tx.objectStore(SESSION_STORE).delete(id);
+      const store = tx.objectStore(SESSION_STORE);
+      ids.forEach(id => store.delete(id));
       const kv = tx.objectStore(KV_STORE);
       Object.entries(values).forEach(([key,value])=>kv.put({key,value,updatedAt:Date.now()}));
       await transactionDone(tx);
@@ -260,6 +265,7 @@
     getAllSessions,
     putSession,
     deleteSession,
+    deleteSessions,
     getMeta,
     setMeta,
     deleteMeta,

@@ -10,7 +10,7 @@
   const DEFAULT_STOP_THRESHOLD = 7;
   const DEFAULT_RESUME_THRESHOLD = 5;
   const DAY_MS = 86400000;
-  const APP_VERSION = '2.2.1';
+  const APP_VERSION = '2.2.2';
   const Core = window.TrainingCore, Content = window.TrainingContent, Long = window.LongPlanUI, Backup = window.TrainingBackup;
   let acceptedParameters={stopThreshold:7,resumeThreshold:5},parameterHistory=[],saveInFlight=false,guideLastElapsed=0,checkpointTimer=null,wakeLock=null,waitingWorker=null,moduleActionReadyAt=0;
   let pendingRestore=null,restorePreview=null,updateRequested=false,insightFilter={plan:'',stage:'',program:'',mode:'',clock:'2',from:'',to:''};
@@ -168,7 +168,7 @@
     betaTelemetry=[]; await DB.setMeta('betaTelemetry', betaTelemetry); renderSettings(); showToast('实机测试数据已清空');
   }
   async function saveBetaFeedback() {
-    if (!settings.betaTelemetryEnabled) { showToast('请先在“我的 → 真实使用验收”开启数据收集'); return; }
+    if (!settings.betaTelemetryEnabled) { showToast('请先在“我的 → 更多数据操作 → 实机测试数据”开启数据收集'); return; }
     recordBetaEvent('POST_SESSION_FEEDBACK', {
       gestureStability: +$('#betaGesture').value,
       hapticClarity: +$('#betaHapticRating').value,
@@ -326,7 +326,7 @@
   }
 
   function analysisSessions() {
-    return sessionCache.filter(s => (!s.simulated || settings.includeSimulatedData)&&!s.rehearsal&&(!insightFilter.plan||s.longPlanId===insightFilter.plan)&&(!insightFilter.stage||s.planSnapshot?.stageName===insightFilter.stage)&&(!insightFilter.program||s.programSnapshot?.name===insightFilter.program)&&(!insightFilter.tracking||(s.trackingMode||'detailed')===insightFilter.tracking)&&(!insightFilter.mode||s.promptModeSnapshot===insightFilter.mode)&&(!insightFilter.clock||String(s.clockVersion||1)===insightFilter.clock)&&(!insightFilter.from||dateKey(new Date(sessionTimestamp(s)))>=insightFilter.from)&&(!insightFilter.to||dateKey(new Date(sessionTimestamp(s)))<=insightFilter.to));
+    return sessionCache.filter(s => !s.simulated&&!s.rehearsal&&(!insightFilter.plan||s.longPlanId===insightFilter.plan)&&(!insightFilter.stage||s.planSnapshot?.stageName===insightFilter.stage)&&(!insightFilter.program||s.programSnapshot?.name===insightFilter.program)&&(!insightFilter.tracking||(s.trackingMode||'detailed')===insightFilter.tracking)&&(!insightFilter.mode||s.promptModeSnapshot===insightFilter.mode)&&(!insightFilter.clock||String(s.clockVersion||1)===insightFilter.clock)&&(!insightFilter.from||dateKey(new Date(sessionTimestamp(s)))>=insightFilter.from)&&(!insightFilter.to||dateKey(new Date(sessionTimestamp(s)))<=insightFilter.to));
   }
   function activeRevisions(s) {
     const revisions = Array.isArray(s.revisions) ? s.revisions : [];
@@ -918,12 +918,7 @@
     const report=liveCoach();
     const history=[...coachHistory].sort((a,b)=>(b.generatedAt||0)-(a.generatedAt||0)).slice(0,10);
     const external=externalCoachPayload(report.context);
-    let simulated='';
-    if(settings.developerMode && settings.includeSimulatedData && sessionCache.some(s=>s.simulated)) {
-      const simReport=liveCoach({allowSimulated:true,onlySimulated:true,decision:adaptiveEngine(sessionCache.filter(s=>s.simulated),{allowSimulated:true})});
-      simulated=`<details class="card"><summary>开发者：模拟 Coach 预览</summary><div style="margin-top:12px">${renderCoachReport(simReport,false)}</div></details>`;
-    }
-    body.innerHTML=`<div class="card coach-card">${renderCoachReport(report,false)}<div class="coach-actions"><button id="saveCoachReport" class="secondary">保存这次复盘</button><button id="copyCoachContext" class="ghost">复制 AI 上下文</button></div><details style="margin-top:12px"><summary class="small">查看最小化结构化上下文</summary><pre id="coachContextPreview" class="coach-context">${escapeHtml(JSON.stringify(external,null,2))}</pre></details></div>${coachChatHtml()}<div class="card"><h2>Coach 与 Training Engine 的边界</h2><p class="muted" style="line-height:1.6">Coach 只能解释训练数据与下一次关注点。无论本地还是外部模式，都没有权限修改 Stop / Resume 阈值、训练周次、Safety Flag 或日程；这些仍由确定性的 Training Engine 处理。</p></div>${simulated}<div class="section-head"><h2>教练复盘历史</h2><span class="muted">${coachHistory.length} 条</span></div>${history.length?`<div class="coach-history">${history.map(h=>`<div class="decision-item"><div class="small">${escapeHtml(formatDateTime(h.generatedAt))}</div><strong>${escapeHtml(h.output?.headline||'Coach 复盘')}</strong><div class="reason">${escapeHtml(h.output?.summary||'')}</div></div>`).join('')}</div>`:'<div class="card empty-compact">完成训练或点击“保存这次复盘”后，这里会保留本地 Coach 历史。</div>'}`;
+    body.innerHTML=`<div class="card coach-card">${renderCoachReport(report,false)}<div class="coach-actions"><button id="saveCoachReport" class="secondary">保存这次复盘</button><button id="copyCoachContext" class="ghost">复制 AI 上下文</button></div><details style="margin-top:12px"><summary class="small">查看最小化结构化上下文</summary><pre id="coachContextPreview" class="coach-context">${escapeHtml(JSON.stringify(external,null,2))}</pre></details></div>${coachChatHtml()}<div class="card"><h2>Coach 与 Training Engine 的边界</h2><p class="muted" style="line-height:1.6">Coach 只能解释训练数据与下一次关注点。无论本地还是外部模式，都没有权限修改 Stop / Resume 阈值、训练周次、Safety Flag 或日程；这些仍由确定性的 Training Engine 处理。</p></div><div class="section-head"><h2>教练复盘历史</h2><span class="muted">${coachHistory.length} 条</span></div>${history.length?`<div class="coach-history">${history.map(h=>`<div class="decision-item"><div class="small">${escapeHtml(formatDateTime(h.generatedAt))}</div><strong>${escapeHtml(h.output?.headline||'Coach 复盘')}</strong><div class="reason">${escapeHtml(h.output?.summary||'')}</div></div>`).join('')}</div>`:'<div class="card empty-compact">完成训练或点击“保存这次复盘”后，这里会保留本地 Coach 历史。</div>'}`;
     requestAnimationFrame(()=>{const box=document.querySelector('#coachMessages');if(box)box.scrollTop=box.scrollHeight;});
   }
   async function copyCoachContext() {
@@ -1784,7 +1779,7 @@
   }
   function renderDecisionPanel() {
     const body=$('#decisionsPanelBody');
-    const rows=[...adaptiveHistory,...(settings.includeSimulatedData?simulationAdaptiveHistory:[])].sort((a,b)=>(b.generatedAt||0)-(a.generatedAt||0));
+    const rows=[...adaptiveHistory].sort((a,b)=>(b.generatedAt||0)-(a.generatedAt||0));
     if(!rows.length){body.innerHTML='<div class="card empty">训练引擎还没有产生调整记录。</div>';return;}
     body.innerHTML=`<div class="card"><h2>Adaptive Engine 决策历史</h2><p class="muted">这里保存系统当时为什么保持、降低或调整下一次动停训练参数。它是训练规则的可解释记录，不是医学诊断。</p><div class="decision-list">${rows.map(d=>`<div class="decision-item"><div class="small">${escapeHtml(formatDateTime(d.generatedAt))} · ${escapeHtml(d.type)}</div><strong>${escapeHtml(d.title)}</strong><div class="small">Stop ${d.stopThreshold??'—'} · Resume ${d.resumeThreshold??'—'} · ${d.applied?'已应用参数':'建议/记录'}</div><div class="reason">${escapeHtml(d.reason)}</div>${d.simulated?'<div class="small">模拟引擎记录</div>':''}${d.afterSessionId?`<div class="small">基于 Session ${escapeHtml(d.afterSessionId)}</div>`:''}</div>`).join('')}</div></div>`;
   }
@@ -1888,7 +1883,7 @@
 
   function exportCsvSummary() {
     const headers=['date','sessionId','program','week','activeMinutes','cycles','meanARTSeconds','meanStopLevel','overshootRatePercent','control','difficulty','awareness','stress','fatigue','pelvicTension','promptMode','dataQuality','qualityScore','revised','simulated','trackingMode','meanManualRecoverySeconds','completion'];
-    const rows=sessionCache.filter(s=>s.endedAt).map(s=>{const m=computeMetrics(s);return [new Date(sessionTimestamp(s)).toISOString(),s.id,s.programSnapshot?.name||'',s.planSnapshot?.week??'',Number.isFinite(m.activeMinutes)?m.activeMinutes.toFixed(1):'',m.cycles,Number.isFinite(m.meanART)?(m.meanART/1000).toFixed(1):'',Number.isFinite(m.meanStopLevel)?m.meanStopLevel.toFixed(2):'',Number.isFinite(m.overshootRate)?(m.overshootRate*100).toFixed(1):'',m.control??'',m.difficulty??'',m.awareness??'',m.stress??'',m.fatigue??'',m.pelvicTension??'',s.promptModeSnapshot||'',dataQuality(s).label,dataQuality(s).score,dataQuality(s).revised?'yes':'no',s.simulated?'yes':'no',s.trackingMode||'detailed',Number.isFinite(m.meanManualRecovery)?(m.meanManualRecovery/1000).toFixed(1):'',s.completion?.status||''];});
+    const rows=sessionCache.filter(s=>s.endedAt&&!s.simulated&&!s.rehearsal).map(s=>{const m=computeMetrics(s);return [new Date(sessionTimestamp(s)).toISOString(),s.id,s.programSnapshot?.name||'',s.planSnapshot?.week??'',Number.isFinite(m.activeMinutes)?m.activeMinutes.toFixed(1):'',m.cycles,Number.isFinite(m.meanART)?(m.meanART/1000).toFixed(1):'',Number.isFinite(m.meanStopLevel)?m.meanStopLevel.toFixed(2):'',Number.isFinite(m.overshootRate)?(m.overshootRate*100).toFixed(1):'',m.control??'',m.difficulty??'',m.awareness??'',m.stress??'',m.fatigue??'',m.pelvicTension??'',s.promptModeSnapshot||'',dataQuality(s).label,dataQuality(s).score,dataQuality(s).revised?'yes':'no',s.simulated?'yes':'no',s.trackingMode||'detailed',Number.isFinite(m.meanManualRecovery)?(m.meanManualRecovery/1000).toFixed(1):'',s.completion?.status||''];});
     const csv='\ufeff'+[headers,...rows].map(r=>r.map(csvCell).join(',')).join('\n');
     downloadBlob(csv,`training-summary-${dateKey()}.csv`,'text/csv;charset=utf-8'); showToast('CSV 摘要已生成');
   }
@@ -1975,72 +1970,52 @@
     const endedAt=ts+elapsed+60000;
     return {schemaVersion:4,id:`SIM-${dateKey(ts)}-${index+1}`,simulated:true,createdAt:ts,startedAt:ts,endedAt,activeAccumulatedMs:elapsed+60000,phase:'COMPLETED',arousal:5,cycles:cs,events,revisions:[],review:{control,relax:clamp(Math.round(5+progress*2+(rnd()-.5)*2),2,9),difficulty:week<2?'太困难':week>6?'合适':'合适',signal:pelvic>=5?'盆底':'呼吸',awareness:week<3?'一点':week<6?'比较明显':'很早就发现'},checkin:{stress,fatigue,pelvicTension:pelvic,pain:false},overshootCount:events.filter(e=>e.type==='OVERSHOOT').length,stopThreshold:7,resumeThreshold:5,moduleIndex:program.modules.length,moduleResults:program.modules.map(m=>({exerciseId:m.exerciseId,status:'COMPLETED',completedAt:endedAt})),promptModeSnapshot:week>=7?'threshold':'full',planSnapshot:{week,stageName:STAGES[Math.min(8,week)]?.name||'模拟',adaptiveType:'SIMULATED'},programSnapshot:program,modules:program.modules.map(moduleLabel)};
   }
-  async function generateEightWeekSimulation() {
-    if(sessionCache.some(s=>s.simulated) && !confirm('本机已经有模拟数据。继续会先删除旧模拟数据再生成一套新的 8 周数据。'))return;
-    await removeSimulatedData(false);
-    const rnd=seededRandom(), start=startOfDay(addDays(new Date(),-56)).getTime(); const core=[];
-    for(let i=0;i<24;i++)core.push(makeSimulatedSession(i,start,rnd));
-    simulationAdaptiveHistory=[];
-    for(let i=0;i<core.length;i++){const d=adaptiveEngine(core.slice(0,i+1),{allowSimulated:true});simulationAdaptiveHistory.push({...decisionRecord(d,{source:'simulator',afterSessionId:core[i].id}),simulated:true});}
-    const edgeA=structuredClone(core[4]); edgeA.id='SIM-EDGE-MISSING-ART'; edgeA.createdAt+=2*3600000; edgeA.startedAt+=2*3600000; edgeA.endedAt+=2*3600000; edgeA.programSnapshot.name+=' · 质量样本'; edgeA.simulatedScenario='missing-art'; edgeA.cycles.forEach(c=>c.artMs=null); edgeA.events=edgeA.events.filter(e=>e.type!=='RECOVERY_TARGET_REACHED'&&e.type!=='AROUSAL_LEVEL_CHANGED').slice(0,6);
-    const edgeB=structuredClone(core[10]); edgeB.id='SIM-EDGE-SPARSE'; edgeB.createdAt+=3*3600000; edgeB.startedAt+=3*3600000; edgeB.endedAt+=3*3600000; edgeB.programSnapshot.name+=' · 质量样本'; edgeB.simulatedScenario='sparse-review'; edgeB.review=null; edgeB.events=edgeB.events.filter(e=>['MODULE_STARTED','STOP_STARTED'].includes(e.type));
-    const simulated=[...core,edgeA,edgeB];
-    for(const sess of simulated)await DB.putSession(sess);
-    sessionCache=await DB.getAllSessions(); settings.includeSimulatedData=true; await DB.setMeta('settings',settings); await DB.setMeta('simulationAdaptiveHistory',simulationAdaptiveHistory);
-    renderSettings();renderInsights();showToast('已生成 8 周模拟数据与质量边界样本');
+  async function removeSimulatedData() {
+    const samples = sessionCache.filter(session=>session.simulated);
+    if(!samples.length || !confirm(`删除 ${samples.length} 条旧模拟记录和相关分析？真实训练记录会保留。`)) return;
+    await DB.deleteSessions(samples.map(session=>session.id),{simulationAdaptiveHistory:[]});
+    sessionCache = await DB.getAllSessions();
+    simulationAdaptiveHistory = [];
+    renderSettings();
+    showToast('旧模拟数据已删除');
   }
-  async function removeSimulatedData(ask=true) {
-    const sims=sessionCache.filter(s=>s.simulated); if(!sims.length){if(ask)showToast('没有模拟数据');return;}
-    if(ask&&!confirm(`删除 ${sims.length} 条模拟 Session？真实训练数据不会受影响。`))return;
-    for(const sess of sims)await DB.deleteSession(sess.id);
-    sessionCache=sessionCache.filter(s=>!s.simulated);simulationAdaptiveHistory=[];settings.includeSimulatedData=false;await DB.setMeta('simulationAdaptiveHistory',[]);await DB.setMeta('settings',settings);
-    renderSettings();renderInsights();if(ask)showToast('模拟数据已删除');
-  }
-  const ACCEPTANCE_ITEMS=[
-    ['gesture','竖屏状态下，上下滑能稳定改变等级，连续操作不会误触页面滚动'],
-    ['stop','达到阈值后，单击 Stop 的反馈清晰且不会误触成双击'],
-    ['resume','主观舒适且可控后，双击 Resume 能稳定识别'],
-    ['quick','Recovery 左滑能打开 Quick Marker，关闭后仍停留在原训练状态'],
-    ['haptic','关键节点震动在当前手机上能清楚区分，且不过度打扰'],
-    ['calendar','日历拖拽在触屏上不会与页面滚动冲突'],
-    ['offline','安装/PWA 或断网后仍能启动并完成一次训练'],
-    ['recover','训练中强制关闭页面后，重新进入可以恢复未完成 Session'],
-    ['export','JSON / CSV 可以成功导出；JSON 备份可以恢复'],
-    ['privacy','锁屏、多任务界面和页面文案没有暴露不希望显示的敏感词']
-  ];
-  function renderCapabilities(){const caps=[['IndexedDB',!!window.indexedDB],['Vibration API',!!navigator.vibrate],['Service Worker','serviceWorker' in navigator],['Wake Lock','wakeLock' in navigator],['Pointer Events','PointerEvent' in window],['File API',!!window.FileReader]];$('#capabilityReport').innerHTML=caps.map(([name,ok])=>`<div class="qa-item"><span class="cap-dot ${ok?'ok':'warn'}"></span><label>${escapeHtml(name)}<div class="small">${ok?'当前浏览器支持':'当前环境未检测到'}</div></label></div>`).join('');}
-  function renderAcceptanceChecklist(){$('#acceptanceChecklist').innerHTML=ACCEPTANCE_ITEMS.map(([id,label])=>`<div class="qa-item"><input type="checkbox" id="qa-${id}" data-acceptance-id="${id}" ${acceptanceResults[id]?'checked':''}><label for="qa-${id}">${escapeHtml(label)}</label></div>`).join('');}
-  async function saveAcceptanceResult(e){const input=e.target.closest('[data-acceptance-id]');if(!input)return;acceptanceResults[input.dataset.acceptanceId]=input.checked;recordBetaEvent('ACCEPTANCE_ITEM_CHANGED',{item:input.dataset.acceptanceId,passed:input.checked});await DB.setMeta('acceptanceResults',acceptanceResults); await DB.setMeta('betaTelemetry',betaTelemetry); await DB.setMeta('betaInstallId',betaInstallId);}
-  async function resetAcceptanceResults(){if(!confirm('重置手机实机验收勾选结果？'))return;acceptanceResults={};await DB.setMeta('acceptanceResults',acceptanceResults); await DB.setMeta('betaTelemetry',betaTelemetry); await DB.setMeta('betaInstallId',betaInstallId);renderAcceptanceChecklist();showToast('验收结果已重置');}
+
+  const promptModeHelp = {
+    full:'显示接近和达到停止阈值的提示。',
+    haptic:'关键节点以震动为主，文字提示更少。',
+    threshold:'达到停止阈值时提示。',
+    autonomous:'由你判断何时停止，系统记录实际操作。'
+  };
 
   function renderSettings() {
-    $('#hapticLabel').textContent=settings.haptics?'开启':'关闭';
-    const realCount=sessionCache.filter(s=>!s.simulated).length; $('#sessionCount').textContent=`${realCount} 次真实训练`;
-    $('#dbStatus').textContent='IndexedDB · Session v5 · App v2.0'; renderPreferences();
-    $('#promptModeLabel').textContent=PROMPT_MODES[settings.promptMode]||PROMPT_MODES.full;
-    $('#externalCoachStatus').textContent=externalCoachConfigured()?'已授权':'关闭';
-    $('#externalCoachEndpoint').value=settings.externalCoachEndpoint||'';
-    $('#externalCoachModel').value=settings.externalCoachModel||'';
-    $('#externalCoachToken').value=externalCoachToken||'';
-    $('#externalCoachConsent').checked=!!settings.externalCoachConsent;
-    const bundled=bundledRelayEndpoint();
-    const relayStatus=$('#relayHealthStatus');
-    if(relayStatus && bundled && settings.externalCoachEndpoint===bundled) relayStatus.textContent='当前使用同源 /api/coach。点击“检测 Relay”可以检查后端是否在线；上游 API Key 只应配置在服务器环境变量中。';
-    $$('#promptModes .mode-btn').forEach(b=>b.classList.toggle('selected',b.dataset.mode===settings.promptMode));
-    const suggestion=$('#promptSuggestion');
-    if(adaptiveDecision?.type==='REDUCE_PROMPTS_SUGGESTED' && settings.promptMode==='full'){
-      suggestion.style.display='flex'; suggestion.innerHTML='<span>◌</span><span>训练引擎认为近期控制较稳定。是否减少提示由你决定；系统不会自动切换。</span>';
-    } else suggestion.style.display='none';
-    $('#developerModeLabel').textContent=settings.developerMode?'开启':'关闭';
-    $('#toggleDeveloperMode').textContent=settings.developerMode?'关闭验收工具':'打开验收工具';
-    $('#developerTools').style.display=settings.developerMode?'block':'none';
-    if ($('#betaTelemetryStatus')) $('#betaTelemetryStatus').textContent=settings.betaTelemetryEnabled?'收集中':'未开启';
-    if ($('#toggleBetaTelemetry')) $('#toggleBetaTelemetry').textContent=settings.betaTelemetryEnabled?'停止实机数据收集':'开启实机数据收集';
-    if ($('#betaTelemetrySummary')) $('#betaTelemetrySummary').textContent=betaTelemetry.length?`已收集 ${betaTelemetry.length} 个交互事件；导出时会把 Session ID 替换为匿名 run 编号。`:'尚未收集实机测试事件。';
-    $('#toggleSimulatedAnalysis').textContent=`分析模拟数据：${settings.includeSimulatedData?'开':'关'}`;
-    const simulated=sessionCache.filter(s=>s.simulated).length;
-    $('#simulationStatus').textContent=simulated?`本地有 ${simulated} 条模拟 Session。${settings.includeSimulatedData?'当前会显示在分析页。':'当前不会显示在分析页。'}`:'尚未生成模拟数据。';
-    if(settings.developerMode){renderCapabilities();renderAcceptanceChecklist();}
+    const realCount = sessionCache.filter(session=>!session.simulated&&!session.rehearsal).length;
+    $('#sessionCount').textContent = `${realCount} 次训练`;
+    const mode = Object.hasOwn(PROMPT_MODES,settings.promptMode) ? settings.promptMode : 'full';
+    $('#promptMode').value = mode;
+    $('#promptModeHelp').textContent = promptModeHelp[mode];
+    renderPreferences();
+
+    $('#externalCoachStatus').textContent = externalCoachConfigured() ? '外部 AI 已授权' : '仅本地';
+    $('#externalCoachEndpoint').value = settings.externalCoachEndpoint || '';
+    $('#externalCoachModel').value = settings.externalCoachModel || '';
+    $('#externalCoachToken').value = externalCoachToken || '';
+    $('#externalCoachConsent').checked = !!settings.externalCoachConsent;
+    $('#disableExternalCoach').hidden = !settings.externalCoachEnabled;
+
+    $('#removeSimulation').hidden = !sessionCache.some(session=>session.simulated);
+    $('#betaTelemetryStatus').textContent = settings.betaTelemetryEnabled ? '收集中' : '未开启';
+    $('#toggleBetaTelemetry').textContent = settings.betaTelemetryEnabled ? '停止数据收集' : '开启数据收集';
+    for(const id of ['clearBetaTelemetry','exportBetaJson','exportBetaCsv','betaTelemetrySummary']){
+      $('#'+id).hidden = !betaTelemetry.length;
+    }
+    $('#betaTelemetrySummary').textContent = `已记录 ${betaTelemetry.length} 个交互事件。`;
+  }
+
+  function selectBundledCoach() {
+    const endpoint = bundledRelayEndpoint();
+    if(!endpoint){showToast('请先通过 HTTP/HTTPS 打开应用');return;}
+    $('#externalCoachEndpoint').value = endpoint;
+    $('#relayHealthStatus').textContent = '已选择本站连接。请勾选发送授权，再保存 AI 设置。';
   }
 
   async function deferToTomorrow() { await Long.defer();refreshDashboard();renderPlan(); }
@@ -2059,7 +2034,7 @@
       if(e.target.closest('#copyCoachContext'))await copyCoachContext();
       if(e.target.closest('#saveCoachReport')){await appendCoachHistory({source:'manual'});renderCoachPanel();showToast('Coach 复盘已保存在本机');return;}
       const mode=e.target.closest('[data-coach-mode]');
-      if(mode){const next=mode.dataset.coachMode;if(next==='external'&&!externalCoachConfigured()){showToast('请先到“我的”配置并授权外部 LLM Adapter');return;}settings.coachChatMode=next;await DB.setMeta('settings',settings);renderCoachPanel();return;}
+      if(mode){const next=mode.dataset.coachMode;if(next==='external'&&!externalCoachConfigured()){showToast('请先到“我的 → AI 教练”配置并授权');return;}settings.coachChatMode=next;await DB.setMeta('settings',settings);renderCoachPanel();return;}
       const quick=e.target.closest('[data-coach-quick]'); if(quick){await sendCoachQuestion(quick.dataset.coachQuick);return;}
       if(e.target.closest('#sendCoachQuestion')){const input=document.querySelector('#coachQuestion');const q=input?.value||'';if(input)input.value='';await sendCoachQuestion(q);return;}
       if(e.target.closest('#clearCoachChat')){if(!coachChatMessages.length||confirm('清空本机 Coach 对话历史？这不会删除训练数据。')){coachChatMessages=[];await persistCoachChat();renderCoachPanel();}return;}
@@ -2068,11 +2043,7 @@
     $('#historyDetailBody').addEventListener('click',e=>{const del=e.target.closest('[data-delete-session]'),rev=e.target.closest('[data-revise-cycle]'),undo=e.target.closest('[data-reverse-revision]');if(del)deleteHistoricalSession(del.dataset.deleteSession);else if(rev)reviseCycle(rev.dataset.sessionId,+rev.dataset.reviseCycle);else if(undo)reverseRevision(undo.dataset.sessionId,undo.dataset.reverseRevision);});
     $('#exportJson').addEventListener('click',exportJsonBackup); $('#exportCsv').addEventListener('click',exportCsvSummary);
     $('#importJson').addEventListener('click',()=>$('#importBackupFile').click()); $('#importBackupFile').addEventListener('change',async e=>{const f=e.target.files?.[0];e.target.value='';if(f)await restoreJsonBackup(f);});
-    $('#toggleDeveloperMode').addEventListener('click',async()=>{settings.developerMode=!settings.developerMode;await DB.setMeta('settings',settings);renderSettings();});
-    $('#toggleSimulatedAnalysis').addEventListener('click',async()=>{settings.includeSimulatedData=!settings.includeSimulatedData;await DB.setMeta('settings',settings);renderSettings();renderInsights();showToast(settings.includeSimulatedData?'已显示模拟数据':'已隐藏模拟数据');});
-    $('#testHaptic').addEventListener('click',()=>{if(navigator.vibrate){navigator.vibrate([40,60,90]);recordBetaEvent('HAPTIC_TEST',{supported:true});showToast('已发送震动测试');}else showToast('当前浏览器不支持震动 API');});
-    $('#generateSimulation').addEventListener('click',generateEightWeekSimulation); $('#removeSimulation').addEventListener('click',removeSimulatedData);
-    $('#acceptanceChecklist').addEventListener('change',saveAcceptanceResult); $('#resetAcceptance').addEventListener('click',resetAcceptanceResults);
+    $('#removeSimulation').addEventListener('click',()=>removeSimulatedData().catch(error=>showToast(error.message)));
     $('#toggleBetaTelemetry').addEventListener('click',toggleBetaTelemetry); $('#exportBetaJson').addEventListener('click',exportBetaJson); $('#exportBetaCsv').addEventListener('click',exportBetaCsv); $('#clearBetaTelemetry').addEventListener('click',clearBetaTelemetry);
     ['betaGesture','betaHapticRating','betaInterference'].forEach(id=>{const el=$('#'+id);if(el)el.addEventListener('input',()=>{const out=id==='betaGesture'?'#betaGestureV':id==='betaHapticRating'?'#betaHapticV':'#betaInterferenceV';$(out).textContent=el.value;});});
     $('#saveBetaFeedback').addEventListener('click',saveBetaFeedback);
@@ -2161,12 +2132,7 @@
     $('#saveReview').addEventListener('click',saveReview); $('#summaryDone').addEventListener('click',()=>{currentSession=null;navTo('dashboard');}); $('#summaryOpenCoach').addEventListener('click',()=>{currentSession=null;navTo('insights');setInsightTab('coach');});
 
     $('#toggleHaptic').addEventListener('click',async()=>{settings.haptics=!settings.haptics;await DB.setMeta('settings',settings);renderSettings();vibrate(40);});
-    $('#useBundledRelay').addEventListener('click',()=>{
-      const endpoint=bundledRelayEndpoint();
-      if(!endpoint){showToast('请先通过 HTTP/HTTPS 打开应用');return;}
-      $('#externalCoachEndpoint').value=endpoint;
-      showToast('已填入同源 Relay Endpoint，请确认发送授权后保存');
-    });
+    $('#useBundledRelay').addEventListener('click',selectBundledCoach);
     $('#testBundledRelay').addEventListener('click',async()=>{
       const el=$('#relayHealthStatus');
       try {
@@ -2181,14 +2147,30 @@
     });
     $('#saveExternalCoach').addEventListener('click',async()=>{
       const endpoint=$('#externalCoachEndpoint').value.trim(); const model=$('#externalCoachModel').value.trim(); const consent=$('#externalCoachConsent').checked;
-      if(endpoint&&!validateExternalCoachEndpoint(endpoint)){showToast('Endpoint 必须使用 HTTPS（localhost 可用 HTTP）');return;}
+      if(endpoint&&!validateExternalCoachEndpoint(endpoint)){$('#aiConnectionDetails').open=true;showToast('连接地址必须使用 HTTPS（localhost 可用 HTTP）');return;}
       if(endpoint&&!consent){showToast('启用外部 Coach 前需要明确勾选发送授权');return;}
       settings.externalCoachEndpoint=endpoint; settings.externalCoachModel=model; settings.externalCoachConsent=!!consent; settings.externalCoachEnabled=!!(endpoint&&consent); externalCoachToken=$('#externalCoachToken').value||'';
       if(!settings.externalCoachEnabled&&settings.coachChatMode==='external')settings.coachChatMode='local';
-      await DB.setMeta('settings',settings); renderSettings(); renderCoachPanel(); showToast(settings.externalCoachEnabled?'外部 Coach Adapter 已启用':'Adapter 设置已保存');
+      await DB.setMeta('settings',settings); renderSettings(); renderCoachPanel(); showToast(settings.externalCoachEnabled?'外部 AI 已启用':'AI 设置已保存');
     });
     $('#disableExternalCoach').addEventListener('click',async()=>{settings.externalCoachEnabled=false;settings.externalCoachConsent=false;settings.coachChatMode='local';externalCoachToken='';await DB.setMeta('settings',settings);renderSettings();renderCoachPanel();showToast('外部 Coach 已关闭');});
-    $('#promptModes').addEventListener('click',async e=>{const b=e.target.closest('[data-mode]');if(!b)return;const mode=b.dataset.mode;if(mode==='autonomous'&&settings.promptMode!=='autonomous'&&!confirm('自主模式会关闭自动 Stop 提示。训练时由你自己判断何时单击进入 Recovery，系统只记录实际 Stop 等级。确认启用吗？'))return;settings.promptMode=mode;await DB.setMeta('settings',settings);renderSettings();showToast(`已切换：${PROMPT_MODES[mode]}`);});
+    $('#promptMode').addEventListener('change',async event=>{
+      const select=event.currentTarget, mode=select.value;
+      if(!Object.hasOwn(PROMPT_MODES,mode))return;
+      if(mode==='autonomous'&&!confirm('自主判断会关闭自动停止提示，你需要自行判断何时停止。确认启用吗？')){
+        select.value=settings.promptMode;
+        return;
+      }
+      select.disabled=true;
+      try {
+        await DB.setMeta('settings',{...settings,promptMode:mode});
+        settings.promptMode=mode;
+        $('#promptModeHelp').textContent=promptModeHelp[mode];
+      } catch(error) {
+        select.value=settings.promptMode;
+        showToast('提示模式未保存：'+error.message);
+      } finally { select.disabled=false; }
+    });
     $('#clearData').addEventListener('click',async()=>{if(!confirm('删除全部本地训练数据并重置训练计划？此操作无法撤销。'))return;await DB.clearTrainingData();Long.reset();acceptedParameters={stopThreshold:7,resumeThreshold:5};parameterHistory=[];sessionCache=[];customPrograms=[];adaptiveHistory=[];simulationAdaptiveHistory=[];coachHistory=[];coachChatMessages=[];externalCoachToken='';acceptanceResults={};betaTelemetry=[];betaInstallId='';plan=defaultPlan();adaptiveDecision=adaptiveEngine([]);await DB.setMeta('plan',plan);await DB.setMeta('customPrograms',customPrograms);await DB.setMeta('adaptiveDecision',adaptiveDecision);await DB.setMeta('adaptiveHistory',adaptiveHistory);await DB.setMeta('simulationAdaptiveHistory',simulationAdaptiveHistory);await DB.setMeta('coachHistory',coachHistory);await DB.setMeta('coachChatMessages',coachChatMessages);await DB.setMeta('acceptanceResults',acceptanceResults); await DB.setMeta('betaTelemetry',betaTelemetry); await DB.setMeta('betaInstallId',betaInstallId);await ensureSchedule(true);refreshDashboard();renderPlan();renderSettings();showToast('本地训练数据已清空');});
 
     $('#programList').addEventListener('click',async e=>{const start=e.target.closest('[data-start-program]'),sched=e.target.closest('[data-schedule-program]'),del=e.target.closest('[data-delete-program]');if(start)await launchProgram(start.dataset.startProgram,null).catch(error=>showToast(error.message));else if(sched)await scheduleProgram(sched.dataset.scheduleProgram);else if(del&&confirm('删除这个自定义训练方案？'))await deleteProgram(del.dataset.deleteProgram);});
@@ -2223,7 +2205,7 @@
     try {
       await DB.init();
       sessionCache=await DB.getAllSessions();
-      settings={gestures:false,leftHanded:false,keepAwake:false,haptics:true,promptMode:'full',developerMode:false,includeSimulatedData:false,coachChatMode:'local',externalCoachEnabled:false,externalCoachEndpoint:'',externalCoachModel:'',externalCoachConsent:false,betaTelemetryEnabled:false,...(await DB.getMeta('settings',{}))};
+      settings={gestures:false,leftHanded:false,keepAwake:false,haptics:true,promptMode:'full',coachChatMode:'local',externalCoachEnabled:false,externalCoachEndpoint:'',externalCoachModel:'',externalCoachConsent:false,betaTelemetryEnabled:false,...(await DB.getMeta('settings',{}))};
       customPrograms=await DB.getMeta('customPrograms',[]);
       adaptiveHistory=await DB.getMeta('adaptiveHistory',[]);
       simulationAdaptiveHistory=await DB.getMeta('simulationAdaptiveHistory',[]);
@@ -2240,10 +2222,11 @@
       await ensureAdaptiveHistory();
       await maybeAdvancePlan();
       resetBuilderState(); bindUI(); bindNewUI(); refreshDashboard(); renderPlan(); renderSettings(); await recoverPendingSession();
+      $('#dbStatus').hidden=true;
       document.body.dataset.appReady='true';
       registerWorker(); checkpointTimer=setInterval(()=>{if(currentSession&&!currentSession.pausedAt&&currentSession.phase!=='COMPLETED')persistCurrentSoon();},5000); $('#saveStatus').textContent='已读取本机数据';
     } catch(err) {
-      console.error(err); $('#adaptiveCard').innerHTML='<strong>本地数据读取失败</strong><div class="reason">'+escapeHtml(err.message)+'。原始迁移数据不会清除。请保留当前浏览器数据并重试。</div>'; $('#dbStatus').textContent='初始化失败'; document.body.dataset.appReady='error';
+      console.error(err); $('#adaptiveCard').innerHTML='<strong>本地数据读取失败</strong><div class="reason">'+escapeHtml(err.message)+'。原始迁移数据不会清除。请保留当前浏览器数据并重试。</div>'; $('#dbStatus').textContent='本地数据读取失败，请重新打开应用。'; $('#dbStatus').hidden=false; document.body.dataset.appReady='error';
     }
   }
 
@@ -2255,10 +2238,15 @@
   function showCover(){if(currentSession&&currentSession.phase!=='COMPLETED')pauseSession();$('#privacyCover').classList.add('show');}
   function renderPreferences(){
     document.body.classList.toggle('left-handed',!!settings.leftHanded);
+    $('#toggleHaptic').textContent='震动：'+(settings.haptics?'开启':'关闭');
     $('#toggleGestures').textContent='手势：'+(settings.gestures?'开启':'关闭');
     $('#toggleHand').textContent=settings.leftHanded?'左手布局':'右手布局';
     $('#toggleWake').textContent='屏幕常亮：'+(settings.keepAwake?'开启':'关闭');
-    DB.getMeta('lastExportAt',null).then(at=>{$('#backupReminder').textContent=at?'上次发起备份：'+formatDateTime(at)+(now()-at>7*DAY_MS?'。建议生成新备份，不能确认上次文件已保存。':'。请自行核对文件保存。'):'尚未生成完整备份。换设备或域名前，请先备份。';});
+    DB.getMeta('lastExportAt',null).then(at=>{
+      const reminder=$('#backupReminder');
+      reminder.hidden=!at;
+      reminder.textContent=at?'上次发起备份 · '+formatDateTime(at):'';
+    });
   }
   function openEvidence(){
     $('#evidenceBody').innerHTML=`<p>${escapeHtml(Content.guidance.plan.text)}</p><p class="small">内容版本 ${Content.version} · 核对 ${Content.checkedAt}</p>`+Object.entries(Content.modules).map(([key,m])=>`<div class="field"><strong>${escapeHtml(EXERCISES[key].name)}</strong><p>${escapeHtml(m.detail)}</p><p class="small">${escapeHtml(m.limitation)}</p><p>${m.sourceIds.map(id=>`<a href="${escapeHtml(Content.sources[id].url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(Content.sources[id].institution)}</a>`).join(' · ')}</p></div>`).join('')+Object.values(Content.guidance).map(g=>`<p class="small">${escapeHtml(g.text)} · ${escapeHtml(g.kind||'健康教育')} ${g.sourceIds.map(id=>`<a href="${escapeHtml(Content.sources[id].url)}" target="_blank" rel="noopener noreferrer">来源</a>`).join(' ')}</p>`).join('')+Object.values(Content.sources).map(source=>`<div class="field"><a href="${escapeHtml(source.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(source.title)}</a><p class="small">${escapeHtml(source.institution)} · ${source.year||'页面未注明年份'} · ${source.checkedAt}</p><p class="small">${escapeHtml(source.supports)}</p></div>`).join('');
@@ -2379,9 +2367,9 @@
     for (const id of ['sessionAIResult','weeklyAIResult']) $('#'+id).addEventListener('click',event=>{
       if (!event.target.closest('[data-open-ai-settings]')) return;
       navTo('settings');
-      const endpoint = $('#externalCoachEndpoint');
-      if (!endpoint.value) endpoint.value = bundledRelayEndpoint() || '';
-      endpoint.focus();
+      $('#aiSettings').open = true;
+      if(!$('#externalCoachEndpoint').value)selectBundledCoach();
+      $('#externalCoachConsent').focus();
     });
     on('copyBasicProgram',()=>{resetBuilderState(Content.basicProgram);$('#customProgramName').value='动停法基础跟练 · 副本';renderBuilder();});
     on('clearBuilder',()=>{resetBuilderState();$('#customProgramName').value='我的训练';renderBuilder();});
@@ -2398,7 +2386,7 @@
     on('openRehearsal',()=>openRehearsal($('#detailedTracking').checked));
     on('cancelCheckin',async()=>{await DB.clearCurrentSession(currentSession?.id);releaseTraining();currentSession=null;updateReady();navTo('dashboard');showToast('已取消，原安排保留');});
     on('associateTraining',async()=>{const id=$('#associateTask').value;if(!id||!currentSession)return;const task=Long.tasks().find(t=>t.id===id&&t.status==='PLANNED');if(!task||!matchesTask(currentSession,task))return;const before=structuredClone(Long.meta()),copy=structuredClone(currentSession);copy.scheduleItemId=id;copy.longPlanId=task.planId;Long.markCompleted(id,copy.id,copy.completion?.status);try{await DB.completeSession(copy,Long.meta(),false);currentSession=copy;sessionCache=sessionCache.map(s=>s.id===copy.id?copy:s);renderSummary();showToast('已关联，实际训练时间保留');}catch(error){Long.hydrate(before);throw error;}});
-    on('retrySave',persistCurrentSoon);on('exportCurrent',exportJsonBackup);on('showPrivacy',showCover);on('hidePrivacy',()=>$('#privacyCover').classList.remove('show'));
+    on('showPrivacy',showCover);on('hidePrivacy',()=>$('#privacyCover').classList.remove('show'));
     on('exportPendingReview',exportJsonBackup);
     for(const [id,key] of [['toggleGestures','gestures'],['toggleHand','leftHanded'],['toggleWake','keepAwake']])on(id,async()=>{settings[key]=!settings[key];await DB.setMeta('settings',settings);renderPreferences();if(key==='keepAwake'){if(settings[key])requestWake();else releaseWake();}});
     on('showEvidence',openEvidence);on('closeEvidence',()=>$('#evidenceDialog').close());
@@ -2457,7 +2445,6 @@
       demoRender();
       $('#rehearsalDialog').showModal();
     }
-    on('startRehearsal',()=>openRehearsal());
     on('demoUp',()=>{if(!demo.paused){demo.level=Math.min(8,demo.level+1);demoRender();}});
     on('demoDown',()=>{if(!demo.paused){demo.level=Math.max(0,demo.level-1);demoRender();}});
     on('demoStop',()=>{if(!demo.paused){demo.stopped=true;demoRender();}});

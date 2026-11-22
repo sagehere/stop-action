@@ -64,6 +64,19 @@
     .nav button.active{color:var(--text);background:var(--panel2)}
     .screen-title{font-size:28px;margin:8px 0 4px}
     .form-card{margin-top:16px}
+    .my-section{margin-top:12px}
+    .my-section > summary,.my-details > summary{cursor:pointer;min-height:34px;align-content:center;font-weight:700}
+    .my-section summary span{float:right;margin-left:10px;font-weight:400}
+    .my-section p.small:not(:empty){margin-top:8px}
+    .my-section .data-actions{grid-template-columns:repeat(auto-fit,minmax(122px,1fr))}
+    .my-section .text-input,.my-section .settings-stack input{font-size:16px}
+    .my-section .section-head{margin-bottom:0}
+    .my-select{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:10px}
+    .my-select select{width:auto;min-width:0}
+    .my-details{border-top:1px solid var(--line);margin-top:12px;padding-top:7px}
+    .my-consent{margin:12px 0}
+    .my-footer{display:flex;gap:8px;margin-top:12px}
+    .my-footer button{min-height:44px;padding:8px}
     .training-preparation{margin-top:14px}
     .training-preparation h2{margin-bottom:8px}
     .training-preparation dl{margin:0}
@@ -145,7 +158,6 @@
     .toast.show{opacity:1;transform:translate(-50%,0)}
     .mini-actions{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:10px}
     .mini-actions .secondary,.mini-actions .ghost{padding:12px}
-    .db-status{display:flex;justify-content:space-between;gap:12px;align-items:center;padding-top:8px;font-size:13px;color:var(--muted)}
     .program-card{border:1px solid var(--line);background:var(--panel2);border-radius:18px;padding:15px;margin-top:10px}
     .program-card:first-child{margin-top:0}
     .program-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
@@ -166,10 +178,6 @@
     .builder-row input[type=number],.text-input{width:100%;border:1px solid var(--line);background:#11151b;color:var(--text);border-radius:11px;padding:10px}
     .builder-order{display:flex;gap:4px}
     .builder-order button{border:1px solid var(--line);background:var(--soft);color:var(--muted);border-radius:8px;padding:5px 7px}
-    .mode-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
-    .mode-btn{border:1px solid var(--line);background:var(--panel2);color:var(--text);border-radius:14px;padding:13px;text-align:left}
-    .mode-btn.selected{outline:2px solid var(--text)}
-    .mode-btn span{display:block;font-size:11px;color:var(--muted);margin-top:4px;line-height:1.35}
     .module-progress{display:flex;gap:7px;justify-content:center;margin:22px 0}
     .module-progress .dot{width:8px;height:8px}
     .guided-icon{font-size:46px;margin-bottom:10px}
@@ -211,7 +219,6 @@
     .quality-good{color:#cfe8da;background:#142019;border-color:#294333}.quality-ok{color:#e8dfbe;background:#211e14;border-color:#47402a}.quality-low{color:#e9c1c1;background:#241818;border-color:#4b2e2e}
     .sim-badge{display:inline-flex;padding:4px 7px;border-radius:999px;background:#242033;border:1px solid #463e61;color:#d9d0f3;font-size:10px;font-weight:750}
     .revision-log{display:grid;gap:8px;margin-top:10px}.revision-item{padding:10px 12px;border:1px solid var(--line);border-radius:13px;background:#12171e}.revision-item.reversed{opacity:.55;text-decoration:line-through}
-    .qa-card{box-shadow:none}.qa-list{display:grid;gap:8px;margin-top:10px}.qa-item{display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-bottom:1px solid var(--line)}.qa-item:last-child{border-bottom:0}.qa-item input{margin-top:3px}.qa-item label{flex:1;line-height:1.45;font-size:13px}.cap-dot{width:9px;height:9px;border-radius:50%;margin-top:5px;background:#687383}.cap-dot.ok{background:#9bc7aa}.cap-dot.warn{background:#d5bd7d}
     .quality-summary{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}.quality-summary .detail-stat{text-align:center}
     .cycle-actions{display:flex;gap:6px}.cycle-actions button{width:auto;padding:6px 8px;border-radius:9px;font-size:11px}
     .coach-card{border-color:#34404d;background:linear-gradient(180deg,#182129,#14191f)}
@@ -357,50 +364,77 @@
     </section>
 
     <section id="settings" class="view">
-      <div class="eyebrow">Settings</div><div class="screen-title">我的</div>
-      <div class="card form-card">
-        <div class="field"><div class="field-head"><strong>震动反馈</strong><span id="hapticLabel" class="muted">开启</span></div><button id="toggleHaptic" class="secondary">切换震动</button></div>
-        <div class="field"><div class="field-head"><strong>训练提示强度</strong><span id="promptModeLabel" class="muted">完整提示</span></div><div id="promptModes" class="mode-grid">
-          <button class="mode-btn" data-mode="full">完整提示<span>注意区 + Stop 文字 + 震动</span></button>
-          <button class="mode-btn" data-mode="haptic">震动为主<span>关键节点震动，弱化文字</span></button>
-          <button class="mode-btn" data-mode="threshold">仅阈值<span>不提示 Level 6，只提示 Stop</span></button>
-          <button class="mode-btn" data-mode="autonomous">自主模式<span>由你决定何时 Stop，系统只记录</span></button>
-        </div><div id="promptSuggestion" class="engine-note" style="display:none"></div></div>
-        <div class="field"><div class="field-head"><strong>Coach 数据边界</strong><span class="muted">本地优先</span></div><p class="small">本地 Coach 只读取通过质量筛选的摘要指标，不读取逐秒 Event Stream。外部 LLM 只有在你主动启用并发送问题时，才会收到同一份最小化摘要。</p><div class="engine-note"><span>◇</span><span>原始事件、修订日志、Session ID 和精确训练时间不会发送给外部 Coach；Training Engine 参数也不会接受模型写入。</span></div></div>
-        <div class="field"><div class="field-head"><strong>外部 LLM Adapter</strong><span id="externalCoachStatus" class="muted">关闭</span></div>
-          <p class="small">可连接你自己的 HTTPS Relay。推荐由 Relay 再调用任意模型服务；浏览器不保存第三方 API 密钥。</p>
+      <h1 class="screen-title">我的</h1>
+
+      <details id="trainingPreferences" class="card my-section">
+        <summary>训练偏好</summary>
+        <label class="my-select">动停提示
+          <select id="promptMode" class="text-input" aria-describedby="promptModeHelp">
+            <option value="full">完整提示</option><option value="haptic">震动为主</option>
+            <option value="threshold">仅停止提示</option><option value="autonomous">自主判断</option>
+          </select>
+        </label>
+        <p id="promptModeHelp" class="small"></p>
+        <div class="mini-actions">
+          <button id="toggleHaptic" class="secondary">震动</button><button id="toggleGestures" class="secondary">手势</button>
+          <button id="toggleHand" class="secondary">右手布局</button><button id="toggleWake" class="secondary">屏幕常亮</button>
+        </div>
+      </details>
+
+      <details id="aiSettings" class="card my-section">
+        <summary>AI 教练 <span id="externalCoachStatus" class="small">仅本地</span></summary>
+        <div class="data-actions">
+          <button id="useBundledRelay" class="secondary">使用本站连接</button>
+          <button id="testBundledRelay" class="secondary">检测本站连接</button>
+        </div>
+        <p id="relayHealthStatus" class="small" role="status"></p>
+        <details id="aiConnectionDetails" class="my-details">
+          <summary>连接地址、模型和令牌</summary>
           <div class="settings-stack">
-            <label>Relay Endpoint<input id="externalCoachEndpoint" type="url" placeholder="https://your-relay.example.com/coach"></label>
-            <label>模型标签（可选）<input id="externalCoachModel" type="text" maxlength="80" placeholder="例如：my-coach-model"></label>
-            <label>本次页面会话令牌（可选，不保存）<input id="externalCoachToken" type="password" autocomplete="off" placeholder="关闭页面后即丢失"></label>
-            <label class="consent-row"><input id="externalCoachConsent" type="checkbox"><span>我理解：发送外部 Coach 问题时，会把最小化训练摘要、我的问题和最近几轮 Coach 对话发送到上述 Endpoint。</span></label>
+            <label>连接地址<input id="externalCoachEndpoint" type="url" placeholder="https://example.com/api/coach"></label>
+            <label>模型标签（选填）<input id="externalCoachModel" type="text" maxlength="80"></label>
+            <label>临时令牌（选填）<input id="externalCoachToken" type="password" autocomplete="off" placeholder="仅用于当前页面"></label>
           </div>
-          <div class="data-actions"><button id="useBundledRelay" class="secondary">使用同源 Relay</button><button id="testBundledRelay" class="secondary">检测同源 Relay</button><button id="saveExternalCoach" class="secondary">保存 Adapter 设置</button><button id="disableExternalCoach" class="ghost">关闭外部 Coach</button></div>
-          <div id="relayHealthStatus" class="data-note">v1.0 自带可部署 Relay：用 relay/server.mjs 启动后，可让 PWA 与 /api/coach 同源运行。认证令牌只保存在当前页面内存，不写 IndexedDB、不进备份。</div>
+        </details>
+        <label class="consent-row my-consent"><input id="externalCoachConsent" type="checkbox"><span>我同意在主动请求 AI 时，向所选地址发送训练摘要、问题和近期教练对话。</span></label>
+        <div class="data-actions">
+          <button id="saveExternalCoach" class="primary">保存 AI 设置</button>
+          <button id="disableExternalCoach" class="ghost">关闭外部 AI</button>
         </div>
-        <div class="field"><div class="field-head"><strong>操作与隐私</strong><span class="muted">本机</span></div><div class="mini-actions"><button id="toggleGestures" class="secondary">手势：关闭</button><button id="toggleHand" class="secondary">右手布局</button><button id="toggleWake" class="secondary">屏幕常亮：关闭</button><button id="showPrivacy" class="secondary">一键遮屏</button><button id="startRehearsal" class="secondary">首次操作演练</button><button id="showEvidence" class="secondary">方法依据与局限</button></div><p class="small">切后台自动暂停并遮罩；操作系统的多任务截图可能仍显示先前画面。</p></div>
-        <div class="field"><div class="field-head"><strong>本地数据</strong><span id="sessionCount" class="muted">0 次训练</span></div><div class="db-status"><span>存储引擎</span><b id="dbStatus">IndexedDB</b></div>
-          <div class="data-actions"><button id="exportJson" class="secondary">导出 JSON 备份</button><button id="exportCsv" class="secondary">导出 CSV 摘要</button><button id="importJson" class="secondary">恢复 JSON 备份</button><button id="clearData" class="ghost">删除训练数据</button></div>
-          <input id="importBackupFile" type="file" accept="application/json,.json" hidden>
-          <div class="data-note">JSON 备份包含完整训练事件流，属于高度私密数据，请自行妥善保存。CSV 仅导出每次训练的摘要，不包含逐事件记录。</div>
-          <div id="backupReminder" class="data-note"></div><div class="mini-actions"><button id="retrySave" class="secondary">重试保存</button><button id="exportCurrent" class="secondary">导出当前记录</button></div>
+      </details>
+
+      <section class="card my-section" aria-labelledby="myDataTitle">
+        <div class="section-head"><h2 id="myDataTitle">备份与数据</h2><span id="sessionCount" class="small"></span></div>
+        <p id="dbStatus" class="small" role="status" hidden></p>
+        <div class="data-actions">
+          <button id="exportJson" class="secondary">导出完整备份</button>
+          <button id="importJson" class="secondary">恢复备份</button>
         </div>
-        <div class="field"><div class="field-head"><strong>真实使用验收</strong><span id="developerModeLabel" class="muted">关闭</span></div>
-          <button id="toggleDeveloperMode" class="secondary">打开验收工具</button>
-          <div id="developerTools" style="display:none;margin-top:12px">
-            <div class="engine-note"><span>◇</span><span>模拟数据永远不会进入真实 Adaptive Decision。只有打开“分析模拟数据”后，趋势页才会把它们显示出来。</span></div>
-            <div class="toggle-row" style="margin-top:10px"><button id="toggleSimulatedAnalysis" class="choice">分析模拟数据：关</button><button id="testHaptic" class="choice">测试震动</button></div>
-            <div class="data-actions"><button id="generateSimulation" class="secondary">生成 8 周模拟数据</button><button id="removeSimulation" class="ghost">删除模拟数据</button></div>
-            <div id="simulationStatus" class="data-note">尚未生成模拟数据。</div>
-            <div class="card qa-card" style="margin-top:12px"><h3>设备能力</h3><div id="capabilityReport" class="qa-list"></div></div>
-            <div class="card qa-card"><div class="section-head"><h3>实机测试数据</h3><span id="betaTelemetryStatus" class="small">未开启</span></div>
-              <p class="small">仅在你主动开启后收集交互质量事件，例如滑动、Stop/Resume、暂停、页面切后台和设备能力；不采集兴奋等级、身体信号内容、Coach 对话或第三方账号信息。</p>
-              <div class="data-actions"><button id="toggleBetaTelemetry" class="secondary">开启实机数据收集</button><button id="exportBetaJson" class="secondary">导出测试 JSON</button><button id="exportBetaCsv" class="secondary">导出测试 CSV</button><button id="clearBetaTelemetry" class="ghost">清空测试数据</button></div>
-              <div id="betaTelemetrySummary" class="data-note">尚未收集实机测试事件。</div>
+        <input id="importBackupFile" type="file" accept="application/json,.json" hidden>
+        <p id="backupReminder" class="small" hidden></p>
+        <details id="myDataDetails" class="my-details">
+          <summary>更多数据操作</summary>
+          <div class="data-actions">
+            <button id="exportCsv" class="secondary">导出 CSV 摘要</button>
+            <button id="clearData" class="ghost">删除训练数据</button>
+            <button id="removeSimulation" class="ghost" hidden>删除旧模拟数据</button>
+          </div>
+          <details id="deviceTestSettings" class="my-details">
+            <summary>实机测试数据 <span id="betaTelemetryStatus" class="small">未开启</span></summary>
+            <p class="small">主动开启后在本机记录交互事件，导出时使用匿名编号。兴奋等级和教练对话不会进入测试数据。</p>
+            <div class="data-actions">
+              <button id="toggleBetaTelemetry" class="secondary">开启实机数据收集</button>
+              <button id="clearBetaTelemetry" class="ghost" hidden>清空测试数据</button>
+              <button id="exportBetaJson" class="secondary" hidden>导出测试 JSON</button>
+              <button id="exportBetaCsv" class="secondary" hidden>导出测试 CSV</button>
             </div>
-            <div class="card qa-card"><h3>手机实机验收清单</h3><p class="small">请在真实手机上逐项完成。结果保存在本机，不会影响训练数据。</p><div id="acceptanceChecklist" class="qa-list"></div><button id="resetAcceptance" class="ghost" style="margin-top:10px">重置验收结果</button></div>
-          </div>
-        </div>
+            <p id="betaTelemetrySummary" class="small" hidden></p>
+          </details>
+        </details>
+      </section>
+
+      <div class="my-footer">
+        <button id="showPrivacy" class="ghost">一键遮屏</button><button id="showEvidence" class="ghost">方法依据</button>
       </div>
     </section>
 
