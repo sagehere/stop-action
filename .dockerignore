@@ -5,7 +5,7 @@
 node_modules
 npm-debug.log
 deploy/.env
-deploy/secrets/*.txt
+deploy/secrets/
 docs
 *.md
 qa.sh

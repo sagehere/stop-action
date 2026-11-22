@@ -1,6 +1,6 @@
 services:
   stop-action:
-    image: ${STOP_ACTION_IMAGE:-ghcr.io/sagehere/stop-action:latest}
+    image: "${STOP_ACTION_IMAGE:-ghcr.io/sagehere/stop-action:sha-3e38df2}"
     pull_policy: always
     restart: unless-stopped
     ports:
@@ -12,8 +12,8 @@ services:
       TRUST_PROXY: "1"
       OPENAI_API_KEY_FILE: /run/secrets/openai_api_key
       RELAY_BEARER_TOKEN_FILE: /run/secrets/relay_bearer_token
-      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.6-luna}
-      ALLOWED_MODELS: ${ALLOWED_MODELS:-gpt-5.6-luna}
+      OPENAI_MODEL: "${OPENAI_MODEL:-gpt-5.6-luna}"
+      ALLOWED_MODELS: "${ALLOWED_MODELS:-}"
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
       RATE_LIMIT_BACKEND: redis

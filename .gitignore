@@ -5,6 +5,8 @@ test-results/
 playwright-report/
 .test-browsers/
 .env
+.env.*
+!.env.example
 *.local
 deploy/.env
 deploy/secrets/*.txt

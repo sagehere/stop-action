@@ -1,4 +1,4 @@
-# Coach Relay v1.2 (Stop Action v1.0)
+# Coach Relay
 
 A dependency-free Node.js 20+ service that serves the PWA and exposes `/api/coach`.
 
@@ -13,22 +13,18 @@ Open `http://127.0.0.1:8787/`.
 ## Local real API
 
 ```bash
-export OPENAI_API_KEY='...'
 export OPENAI_MODEL='gpt-6-astra'
-export ALLOWED_MODELS='gpt-6-astra'
-node server.mjs
+OPENAI_API_KEY_FILE=../deploy/secrets/openai_api_key.txt node server.mjs
 ```
 
-The key can also be mounted as a file:
-
-```bash
-OPENAI_API_KEY_FILE=/run/secrets/openai_api_key node server.mjs
-```
+Put the upstream key into the indicated file with a local editor. In Docker, the stack mounts the file under `/run/secrets/`.
 
 ## Endpoints
 
 - `GET /api/health` — process liveness and non-secret configuration summary.
-- `GET /api/ready` — model credential + rate limiter readiness.
+- `GET /api/ready` — checks core application assets.
+- `GET /api/coach/ready` — checks model configuration and rate limiter readiness.
+- `GET /api/coach/models` — lists model IDs from `ALLOWED_MODELS`, with `OPENAI_MODEL` as the fallback. Uses the same origin and bearer token checks as the coach endpoint.
 - `POST /api/coach` — validated Coach request.
 - all other GET/HEAD paths — static PWA.
 
