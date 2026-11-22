@@ -16,6 +16,9 @@
     if(session.currentCycle){if(typeof session.currentCycle!=='object'||Array.isArray(session.currentCycle))throw new Error('恢复阶段无效');for(const key of ['signals'])if(session.currentCycle[key]!=null&&!Array.isArray(session.currentCycle[key]))throw new Error('恢复阶段无效');}
     if(session.programSnapshot)window.LongPlans.validateProgram(session.programSnapshot);
     if(session.review?.control!=null&&(!Number.isFinite(session.review.control)||session.review.control<0||session.review.control>10))throw new Error('评分无效');
+    if(session.review?.controlRating!=null&&session.review.controlRating!=='unknown'&&!window.TrainingCore.controlRatings.some(rating=>rating.key===session.review.controlRating))throw new Error('控制感档位无效');
+    if(session.review?.experience!=null&&!['uncomfortable','same','comfortable'].includes(session.review.experience))throw new Error('练后感受无效');
+    if(session.review?.scaleVersion!=null&&session.review.scaleVersion!==2)throw new Error('评分参照版本无效');
     for(const cycle of session.cycles||[]){if(!cycle||typeof cycle!=='object')throw new Error('循环无效');for(const key of ['stopLevel','resumeLevel'])if(cycle[key]!=null&&(!Number.isFinite(cycle[key])||cycle[key]<0||cycle[key]>9))throw new Error('等级无效');for(const key of ['artMs','manualRecoveryMs'])if(cycle[key]!=null&&(!Number.isFinite(cycle[key])||cycle[key]<0))throw new Error('恢复用时无效');}
     return session;
   }
@@ -29,7 +32,8 @@
     (meta.longTemplates||[]).forEach(window.LongPlans.validateTemplate);
     (meta.longPlans||[]).forEach(plan=>{
       window.LongPlans.validateTemplate(plan.templateSnapshot);window.LongPlans.parseDate(plan.startDate);
-      if(typeof plan.id!=='string'||!['ACTIVE','PAUSED','ARCHIVED'].includes(plan.status)||!Number.isInteger(plan.confirmedWeek)||plan.confirmedWeek<0||plan.confirmedWeek>=plan.templateSnapshot.weeks.length||!Array.isArray(plan.tasks)||plan.tasks.length>10000)throw new Error('执行计划无效');
+      if(typeof plan.id!=='string'||!['ACTIVE','PAUSED','ARCHIVED'].includes(plan.status)||!Number.isInteger(plan.confirmedWeek)||plan.confirmedWeek<0||plan.confirmedWeek>=(plan.templateSnapshot.weeks?.length||1)||!Array.isArray(plan.tasks)||plan.tasks.length>10000)throw new Error('执行计划无效');
+      window.LongPlans.validateCyclePlan(plan);
       if(!Array.isArray(plan.confirmations)||typeof plan.name!=='string'||plan.name.length>80||new Set(plan.tasks.map(t=>t.id)).size!==plan.tasks.length)throw new Error('计划元数据无效');
       for(const task of plan.tasks){window.LongPlans.parseDate(task.date);if(task.originalDate)window.LongPlans.parseDate(task.originalDate);if(typeof task.id!=='string'||!task.id||task.planId!==plan.id||!Number.isInteger(task.weekIndex)||task.weekIndex<0||task.weekIndex>51||!['PLANNED','COMPLETED','SKIPPED','CANCELLED'].includes(task.status))throw new Error('任务无效');if(task.programSnapshot)window.LongPlans.validateProgram(task.programSnapshot);}
     });
@@ -41,7 +45,7 @@
     if(meta.currentSession)validateSession(meta.currentSession);
     if(meta.currentSession){const s=meta.currentSession;if(!['CHECK_IN','MODULE_ACTIVE','BUILD','CONTROL_ZONE','STOP_SUGGESTED','RECOVERY','RESUME_AVAILABLE','COMPLETE_READY','REVIEW','COMPLETED'].includes(s.phase))throw new Error('当前训练状态不支持');if(s.guidedState){const g=s.guidedState;if(g.type==='timed'){if(!Number.isFinite(g.remainingSec)||g.remainingSec<0||g.remainingSec>1800)throw new Error('当前倒计时无效');}else if(g.type==='interval'){if(!Number.isFinite(g.phaseRemainingSec)||g.phaseRemainingSec<0||g.phaseRemainingSec>6||!['contract','release'].includes(g.intervalPhase)||!Number.isInteger(g.rounds)||g.rounds<1||g.rounds>30||!Number.isInteger(g.round)||g.round<1||g.round>g.rounds)throw new Error('当前协调轮次无效');}else throw new Error('当前模块状态不支持');}}
     if(meta.plan&&(!Array.isArray(meta.plan.schedule)||!Number.isFinite(meta.plan.weekStartedAt)))throw new Error('旧计划无效');
-    if(meta.settings){if(typeof meta.settings!=='object'||Array.isArray(meta.settings))throw new Error('设置无效');delete meta.settings.externalCoachToken;meta.settings.externalCoachEnabled=false;meta.settings.externalCoachConsent=false;meta.settings.coachChatMode='local';}
+    if(meta.settings){if(typeof meta.settings!=='object'||Array.isArray(meta.settings))throw new Error('设置无效');delete meta.settings.externalCoachToken;delete meta.settings.externalCoachReviewConsent;meta.settings.externalCoachEnabled=false;meta.settings.externalCoachConsent=false;meta.settings.coachChatMode='local';}
     return {...data,meta};
   }
   function base64(bytes){let result='';for(let i=0;i<bytes.length;i+=8192)result+=String.fromCharCode(...bytes.subarray(i,i+8192));return btoa(result);}

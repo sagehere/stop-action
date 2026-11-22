@@ -22,8 +22,7 @@ curl -fsS "$BASE_URL/api/ready" | grep -q '"ok":true'
 echo OK
 
 printf '3/5 PWA shell... '
-curl -fsS -o /tmp/stop-action-index.html "$BASE_URL/"
-grep -q 'v1.0' /tmp/stop-action-index.html
+curl -fsS "$BASE_URL/" | grep 'rel="manifest" href="manifest.webmanifest"' >/dev/null
 echo OK
 
 printf '4/5 service worker assets... '

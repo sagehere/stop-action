@@ -50,8 +50,8 @@
     review:{ text:'记录感受即可；一次波动不代表进步或退步，不做成绩排名。', sourceIds:['eau'] },
     trend:{ text:'只比较自己的相近训练条件；样本少或计时口径不同，不作改善结论。', sourceIds:[], kind:'产品统计说明' },
     coach:{ text:'解释训练摘要，说明证据和不确定性；不诊断、不保证疗效、不修改训练参数。', sourceIds:['eau'] },
-    plan:{ text:'4/8/12周是可编辑的练习组织周期。每周两次和初始循环数是产品默认值，并非经过验证的完整疗程。', sourceIds:['eau','trial','rehab'], kind:'产品安排及研究边界' }
+    plan:{ text:'练习日、休息日和单次循环数是可编辑的记录与计划选项。当前模板的练休节奏属于产品预设，训练方法另有来源。', sourceIds:['eau','trial','rehab'], kind:'产品安排及研究边界' }
   };
-  const policy = '仅解释记录与觉察过程。0–9为个人主观量表，ART不是临床疗效指标。不得诊断或保证延长/治愈；不得建议修改阈值、周次、练习量或处方。疼痛时优先建议暂停与专业评估，不把疼痛称为正常训练反应。不把4/8/12周模板称为验证疗程，不外推专业盆底康复研究。';
+  const policy = '仅解释记录与觉察过程。0–9为个人主观量表，ART不是临床疗效指标。不得诊断或保证延长/治愈；不得建议修改阈值、周次、练习量或处方。疼痛时优先建议暂停与专业评估，不把疼痛称为正常训练反应。不把练休模板称为验证疗程，不外推专业盆底康复研究。';
   window.TrainingContent = { version, checkedAt, sources, modules, basicProgram, basicSteps, preparation, guidance, policy };
 })();
