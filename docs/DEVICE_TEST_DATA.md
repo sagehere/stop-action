@@ -14,7 +14,7 @@
 
 默认关闭。用户需要在：
 
-`我的 → 真实使用验收 → 实机测试数据`
+`我的 → 更多数据操作 → 实机测试数据`
 
 主动点击“开启实机数据收集”。
 
@@ -42,9 +42,7 @@
 - `APP_HIDDEN_DURING_SESSION`
 - `SESSION_FINISHED`
 - `GESTURE_UNRECOGNIZED`
-- `HAPTIC_TEST`
 - `POST_SESSION_FEEDBACK`
-- `ACCEPTANCE_ITEM_CHANGED`
 
 ## 明确不收集
 

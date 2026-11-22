@@ -176,6 +176,53 @@ let browser;
   assert.equal(await page.evaluate(()=>LongPlanUI.active().tasks[0].status),'PLANNED');
   assert.equal(await page.evaluate(()=>LongPlanUI.active().tasks[0].lastPartialSessionId),sessions[0].id);
   await page.locator('#summaryDone').click();await page.locator('[data-nav="settings"]').first().click();
+  assert.equal(await page.locator('#myDataDetails').evaluate(el=>el.open),false);
+  assert.equal(await page.locator('#generateSimulation,#capabilityReport,#acceptanceChecklist,#retrySave').count(),0);
+  assert.equal(await page.locator('#exportJson').isVisible(),true);
+  assert.equal(await page.locator('#externalCoachEndpoint').isVisible(),false);
+  await page.locator('#trainingPreferences > summary').click();
+  await page.locator('#promptMode').selectOption('threshold');
+  await page.waitForFunction(async()=> (await TrainingDB.getMeta('settings',{})).promptMode==='threshold');
+  await page.locator('#promptMode').selectOption('full');
+  await page.waitForFunction(async()=> (await TrainingDB.getMeta('settings',{})).promptMode==='full');
+  await page.locator('#trainingPreferences > summary').click();
+  await page.locator('#mainNav [data-nav="insights"]').click();
+  await page.locator('#weeklyReviewWithAI').click();
+  await page.locator('#weeklyAIResult [data-open-ai-settings]').click();
+  assert.equal(await page.locator('#aiSettings').evaluate(el=>el.open),true);
+  assert.equal(await page.locator('#externalCoachEndpoint').inputValue(),base+'/api/coach');
+  await page.locator('#externalCoachConsent').check();
+  await page.locator('#saveExternalCoach').click();
+  await page.waitForFunction(async()=> (await TrainingDB.getMeta('settings',{})).externalCoachEnabled);
+  await page.locator('#disableExternalCoach').click();
+  await page.waitForFunction(async()=> !(await TrainingDB.getMeta('settings',{})).externalCoachEnabled);
+
+  await page.evaluate(async()=>{
+    const settings=await TrainingDB.getMeta('settings',{});
+    await TrainingDB.setMeta('settings',{...settings,developerMode:true,includeSimulatedData:true});
+    const sample=__EC_DEBUG__.makeSimulatedSession(0,Date.now(),__EC_DEBUG__.seededRandom(12));
+    await TrainingDB.putSession(sample);
+  });
+  await page.reload();await page.waitForFunction(()=>document.body.dataset.appReady==='true');
+  assert.equal((await page.evaluate(()=>TrainingDB.getAllSessions())).length,2);
+  await page.locator('[data-nav="settings"]').first().click();
+  await page.locator('#myDataDetails > summary').click();
+  const csvReady=page.waitForEvent('download');
+  await page.locator('#exportCsv').click();
+  assert.doesNotMatch(await fs.readFile(await (await csvReady).path(),'utf8'),/SIM-/);
+  await page.locator('#removeSimulation').click();
+  await page.waitForFunction(async()=> (await TrainingDB.getAllSessions()).length===1);
+  await page.locator('#deviceTestSettings > summary').click();
+  assert.equal(await page.locator('#exportBetaJson').isVisible(),false);
+  await page.locator('#toggleBetaTelemetry').click();
+  await page.waitForSelector('#exportBetaJson:visible');
+  const telemetryReady=page.waitForEvent('download');
+  await page.locator('#exportBetaJson').click();
+  const telemetry=JSON.parse(await fs.readFile(await (await telemetryReady).path(),'utf8'));
+  assert.ok(telemetry.events.some(event=>event.type==='COLLECTION_ENABLED'));
+  await page.locator('#toggleBetaTelemetry').click();
+  await page.waitForFunction(async()=> !(await TrainingDB.getMeta('settings',{})).betaTelemetryEnabled);
+  await page.locator('#myDataDetails > summary').click();
   await page.locator('#exportJson').click();await page.locator('#backupPassword').fill('browser test password');await page.locator('#backupPasswordAgain').fill('browser test password');
   const downloaded=page.waitForEvent('download');await page.locator('#backupForm button[type="submit"]').click();const download=await downloaded;
   await fs.mkdir('test-results',{recursive:true});const backupPath=path.resolve('test-results/browser-backup.json');await download.saveAs(backupPath);
@@ -186,7 +233,7 @@ let browser;
   assert.equal((await page.evaluate(()=>TrainingDB.getAllSessions())).length,1);
   // IndexedDB transaction rollback: a malformed key must not erase the existing row.
   await page.evaluate(async()=>{try{await TrainingDB.importData([{events:[]}],{},true);}catch{}});assert.equal((await page.evaluate(()=>TrainingDB.getAllSessions())).length,1);
-  await page.locator('[data-nav="settings"]').first().click();await page.locator('#toggleGestures').click();await page.locator('[data-nav="plan"]').first().click();await page.locator("#planProgramsDetails").evaluate(details=>{details.open=true;});await page.locator('[data-start-program="standard"]').click();await page.locator('#continueCheckin').click();await page.locator('#skipModule').click();
+  await page.locator('[data-nav="settings"]').first().click();await page.locator('#trainingPreferences > summary').click();await page.locator('#toggleGestures').click();await page.locator('[data-nav="plan"]').first().click();await page.locator("#planProgramsDetails").evaluate(details=>{details.open=true;});await page.locator('[data-start-program="standard"]').click();await page.locator('#continueCheckin').click();await page.locator('#skipModule').click();
   await page.evaluate(()=>window.__EC_DEBUG__.configureBetaTelemetryForTest());
   const level=Number(await page.locator('#arousal').textContent()),surface=await page.locator('#gestureSurface').boundingBox();await page.mouse.move(surface.x+surface.width/2,surface.y+surface.height/2+60);await page.mouse.down();await page.mouse.move(surface.x+surface.width/2,surface.y+surface.height/2-60);await page.mouse.up();assert.equal(Number(await page.locator('#arousal').textContent()),level+1);await page.locator('#levelDown').click();assert.equal(Number(await page.locator('#arousal').textContent()),level);
   const inputEvents = await page.evaluate(()=>window.__EC_DEBUG__.betaExportPayload().events.map(event=>event.type));
@@ -198,8 +245,8 @@ let browser;
   await page.locator('[data-nav="plan"]').first().click();await page.locator("#planProgramsDetails").evaluate(details=>{details.open=true;});await page.locator('[data-start-program="mindfulness_only"]').click();await page.locator('#continueCheckin').click();await page.locator('#skipModule').click({clickCount:2});assert.equal(await page.locator('#moduleGuide.active').count(),1);await page.waitForFunction(async()=>{const s=await TrainingDB.getCurrentSession();return s?.moduleIndex===1;});const repeated=await page.evaluate(()=>TrainingDB.getCurrentSession());assert.equal(repeated.moduleResults.length,1);await page.locator('#guidedPause').click();await page.locator('#endFromPause').click();await page.locator('#saveReview').click();await page.locator('#summaryDone').click();
   // Verify own assets are cached, API remains live, and core training starts offline.
   await page.evaluate(()=>navigator.serviceWorker.ready);await page.reload();await page.waitForFunction(()=>document.body.dataset.appReady==='true');
-  const cacheKeys=await page.evaluate(()=>caches.keys());assert.ok(cacheKeys.includes('stop-action-v22-preparation'));
-  await page.evaluate(()=>fetch('/api/health'));const cachedApi=await page.evaluate(async()=>{const cache=await caches.open('stop-action-v22-preparation');return !!await cache.match('/api/health');});assert.equal(cachedApi,false);
+  const cacheKeys=await page.evaluate(()=>caches.keys());assert.ok(cacheKeys.includes('stop-action-v22-my'));
+  await page.evaluate(()=>fetch('/api/health'));const cachedApi=await page.evaluate(async()=>{const cache=await caches.open('stop-action-v22-my');return !!await cache.match('/api/health');});assert.equal(cachedApi,false);
   if(engine==='webkit'){
     // Playwright #42775: setOffline incorrectly blocks even Service Worker responses.
     // Stop the origin instead; prove an uncached browser cannot load it before testing cache recovery.
