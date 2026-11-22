@@ -10,7 +10,7 @@
   const DEFAULT_STOP_THRESHOLD = 7;
   const DEFAULT_RESUME_THRESHOLD = 5;
   const DAY_MS = 86400000;
-  const APP_VERSION = '2.2.3';
+  const APP_VERSION = '2.3.0';
   const Core = window.TrainingCore, Content = window.TrainingContent, Long = window.LongPlanUI, Backup = window.TrainingBackup;
   let acceptedParameters={stopThreshold:7,resumeThreshold:5},parameterHistory=[],saveInFlight=false,guideLastElapsed=0,checkpointTimer=null,wakeLock=null,waitingWorker=null,moduleActionReadyAt=0;
   let pendingRestore=null,restorePreview=null,updateRequested=false,insightFilter={plan:'',stage:'',program:'',mode:'',clock:'2',from:'',to:''};
@@ -410,7 +410,7 @@
       meanManualRecovery: average(manualTimes),
       overshoot,
       overshootRate: stopCount && !isSimple(s) ? Math.min(1, overshoot / stopCount) : null,
-      control: s.review?.control ?? null,
+      control: numericControl(s),
       pelvicTension: s.checkin?.pelvicTension ?? null,
       stress: s.checkin?.stress ?? null,
       fatigue: s.checkin?.fatigue ?? null,
@@ -437,7 +437,7 @@
     if (!svg) return;
     const points = rows.map((r,index) => ({label:r.label, value:r[key],index})).filter(p => Number.isFinite(p.value));
     if (!points.length) { svg.innerHTML='<text x="18" y="90" fill="#7f8a98" font-size="13">暂无足够数据</text>'; return; }
-    const w=480,h=180,padL=34,padR=16,padT=16,padB=30;
+    const w=480,h=180,padL=options.padL||34,padR=16,padT=16,padB=30;
     let min = Number.isFinite(options.min) ? options.min : Math.min(...points.map(p=>p.value));
     let max = Number.isFinite(options.max) ? options.max : Math.max(...points.map(p=>p.value));
     if (min===max) { min-=1; max+=1; }
@@ -448,7 +448,7 @@
       y:h-padB-((p.value-min)/range)*(h-padT-padB)
     }));
     const path=coords.map((p,i)=>(i&&p.index===coords[i-1].index+1?'L':'M')+p.x.toFixed(1)+','+p.y.toFixed(1)).join(' ');
-    const grid=[0,0.5,1].map(t=>{
+    const grid=(options.ticks||[0,0.5,1]).map(t=>{
       const y=padT+t*(h-padT-padB), val=max-t*range;
       return `<line x1="${padL}" y1="${y}" x2="${w-padR}" y2="${y}" stroke="#252b34" stroke-width="1"/><text x="2" y="${y+4}" fill="#74808d" font-size="10">${options.format?options.format(val):Math.round(val*10)/10}</text>`;
     }).join('');
@@ -901,29 +901,92 @@
       responseFormat:{schema:'coach-chat-response-v1',allowedFields:COACH_CHAT_ALLOWED_FIELDS}
     };
   }
-  async function callExternalCoach(question, review = null) {
-    const endpoint=validateExternalCoachEndpoint(settings.externalCoachEndpoint);
-    if(!externalCoachConfigured()||!endpoint)throw new Error('外部 Coach 尚未完成配置与授权。');
+  function coachError(status,data){
+    const code=data?.error;
+    if(code==='server_missing_openai_api_key')return '连接服务缺少上游 API 密钥，请检查部署设置。';
+    if(code==='upstream_http_401'||code==='upstream_http_403')return '上游 API 密钥无效或权限不足，请检查端点配置。';
+    if(code==='upstream_http_404'||data?.details?.includes?.('model: not allowed by relay'))return '所选模型不可用，请重新拉取模型或检查允许列表。';
+    if(code==='upstream_http_400')return '上游拒绝分析请求，请确认模型支持 Responses API 和结构化输出。';
+    if(status===401||status===403)return '连接令牌错误，或端点没有授权此站点。';
+    if(status===404||status===405||status===400)return '连接地址或协议不匹配，请填写支持训练分析的教练接口（例如 /api/coach）。';
+    if(status===408||status===504)return '连接超时，请稍后重试。';
+    if(status===429)return '请求次数达到限制，请稍后重试。';
+    return `服务暂时无法完成分析（HTTP ${status}），请重试或检查端点设置。`;
+  }
+
+  async function callExternalCoach(question,review=null,connection=null){
+    const endpoint=validateExternalCoachEndpoint(connection?.endpoint||settings.externalCoachEndpoint);
+    if(!endpoint||(!connection&&!externalCoachConfigured()))throw new Error('请填写有效的 HTTPS 教练接口并保存授权。');
     const controller=new AbortController();
-    const timer=setTimeout(()=>controller.abort(),20000);
+    const timer=setTimeout(()=>controller.abort(),35000);
     const headers={'Content-Type':'application/json','Accept':'application/json'};
-    if(externalCoachToken)headers.Authorization=`Bearer ${externalCoachToken}`;
-    const request = coachChatRequest(question);
-    if (review) {
-      request.conversation = [];
-      request.context = {schema:'coach-context-v1',privacy:request.context.privacy,review};
-    }
-    let response;
-    try { response=await fetch(endpoint,{method:'POST',headers,body:JSON.stringify(request),signal:controller.signal}); }
-    finally { clearTimeout(timer); }
-    if(!response.ok)throw new Error(`Relay 返回 HTTP ${response.status}`);
-    let data; try{data=await response.json();}catch(_){throw new Error('Relay 没有返回有效 JSON');}
+    const token=connection?connection.token:externalCoachToken;
+    if(token)headers.Authorization=`Bearer ${token}`;
+    const request=review?{
+      schema:'coach-chat-request-v1',
+      policy:{explainOnly:true,mayModifyTrainingEngine:false,rawEventsAllowed:false,medicalDiagnosisAllowed:false,trainingParameterAdviceAllowed:false},
+      model:(connection?connection.model:settings.externalCoachModel)||null,
+      context:{schema:'coach-context-v1',privacy:{rawEventsIncluded:false,exactTimestampsIncluded:false,sessionIdsIncluded:false,revisionsIncluded:false},review},
+      conversation:[],message:question,responseFormat:{schema:'coach-chat-response-v1',allowedFields:COACH_CHAT_ALLOWED_FIELDS}
+    }:coachChatRequest(question);
+    let response,data;
+    try{
+      response=await fetch(endpoint,{method:'POST',headers,body:JSON.stringify(request),signal:controller.signal,redirect:'error'});
+      data=await response.json().catch(error=>{
+        if(error.name==='AbortError')throw error;
+        return null;
+      });
+    }catch(error){
+      if(error.name==='AbortError')throw new Error('连接超时，请稍后重试。');
+      if(error instanceof TypeError)throw new Error('无法连接端点，请检查网络、HTTPS 与跨域授权。');
+      throw error;
+    }finally{clearTimeout(timer);}
+    if(!response.ok)throw new Error(coachError(response.status,data));
+    if(!data)throw new Error('端点没有返回 JSON，请检查接口地址及协议。');
     if(objectHasForbiddenCoachKey(data))throw new Error('外部回答包含禁止的训练控制字段，已拒绝显示。');
     const out=sanitizeCoachChatOutput(data);
-    if(!out.answer)throw new Error('外部回答缺少 answer 字段。');
+    if(!out.answer)throw new Error('端点没有返回可显示的分析，请检查是否使用 Stop Action 教练接口。');
     const visible=[out.answer,out.focus,out.uncertainty,out.safetyNotice,...out.evidence.flatMap(e=>[e.label,e.value])].filter(Boolean).join('\n');
     if(containsTrainingControlDirective(visible))throw new Error('外部回答包含直接修改训练参数的指令，已拒绝显示。');
     return out;
+  }
+
+  const coachTokenKey='stop-action:coach-token';
+  function readCoachToken(){
+    for(const store of ['sessionStorage','localStorage']){
+      try{
+        const saved=JSON.parse(window[store].getItem(coachTokenKey)||'null');
+        if(saved?.endpoint===validateExternalCoachEndpoint(settings.externalCoachEndpoint)&&typeof saved.token==='string'){
+          return {token:saved.token,remember:store==='localStorage'};
+        }
+      }catch{}
+    }
+    return {token:'',remember:false};
+  }
+
+  function saveCoachToken(endpoint,token,remember){
+    externalCoachToken=token;
+    for(const store of ['sessionStorage','localStorage']){
+      try{
+        window[store].removeItem(coachTokenKey);
+        if(endpoint&&token&&store===(remember?'localStorage':'sessionStorage')){
+          window[store].setItem(coachTokenKey,JSON.stringify({endpoint,token}));
+        }
+      }catch{}
+    }
+  }
+
+  async function testCoachReview(){
+    const button=$('#testCoachReview'), status=$('#coachTestStatus');
+    const connection={endpoint:$('#externalCoachEndpoint').value.trim(),model:$('#externalCoachModel').value.trim(),token:$('#externalCoachToken').value.trim()};
+    if(!validateExternalCoachEndpoint(connection.endpoint)){status.textContent='请先填写有效的 HTTPS 连接地址。';return;}
+    button.disabled=true;
+    status.textContent='正在用虚构摘要测试分析…';
+    try{
+      await callExternalCoach('请解读本次提供的训练摘要。',{scope:'session',facts:[['有效时长','03:00'],['完成轮次','2']],pain:false,comparable:false,stopStart:true},connection);
+      status.textContent='连接正常，已收到分析结果。';
+    }catch(error){status.textContent=error.message;}
+    finally{button.disabled=false;}
   }
   async function persistCoachChat() {
     coachChatMessages=coachChatMessages.slice(-COACH_CHAT_MAX_MESSAGES);
@@ -995,7 +1058,7 @@
     const reportOpen=body.querySelector('#localCoachReport')?.open;
     const historyOpen=body.querySelector('#coachReportHistory')?.open;
     const history=[...coachHistory].sort((a,b)=>(b.generatedAt||0)-(a.generatedAt||0)).slice(0,10);
-    body.innerHTML=coachChatHtml()+`
+    body.innerHTML=`<details class="card my-section" id="coachChatDetails" ${body.querySelector('#coachChatDetails')?.open?'open':''}><summary>教练对话</summary>${coachChatHtml()}</details>`+`
       <details class="card my-section" id="localCoachReport" ${reportOpen?'open':''}>
         <summary>本地复盘</summary>
         ${renderCoachReport(liveCoach())}
@@ -1018,8 +1081,8 @@
 
   function weeklyPlanStats() {
     const week = weekStartKey(now()), active = Long.active();
-    const tasks = (active?.tasks || []).filter(task=>
-      task.status !== 'CANCELLED' && weekStartKey(LongPlans.parseDate(task.date).getTime()) === week);
+    const tasks = Long.tasks(week,LongPlans.addDays(week,7)).filter(task=>
+      !task.instance.free && task.status !== 'CANCELLED' && (Long.available(task,task.date) || task.status==='COMPLETED'));
     const categories = Object.fromEntries(['stop','mindfulness','pelvic'].map(category=>{
       const matching = tasks.filter(task=>Long.taskProgram(task).modules.some(module=>EXERCISES[module.exerciseId]?.category===category));
       return [category,{target:matching.length,done:matching.filter(task=>task.status==='COMPLETED').length}];
@@ -1150,7 +1213,8 @@
         return;
       }
       moduleActionReadyAt = 0;
-      const task = Long.tasks().find(t => t.id === scheduleItemId);
+      const task = Long.taskById(scheduleItemId);
+      if(scheduleItemId&&(!task||task.status!=='PLANNED'||!Long.available(task)))throw new Error('安排已变化，请重新打开计划。');
       const program = task ? Long.taskProgram(task) : typeof programId === 'string' ? programById(programId) : programId;
       newSession(program, scheduleItemId);
       if (task) {
@@ -1162,11 +1226,9 @@
       }
       renderCheckin();
       ['difficulty','signals','awareness'].forEach(id=>$$(`#${id} .chip`).forEach(c=>c.classList.remove('selected')));
-      $('#control').value = 6;
-      $('#controlV').textContent = '未评分';
-      $('#relax').value = 5;
-      $('#relaxV').textContent = '未评分';
-      await DB.startSession(Core.checkpoint(currentSession));
+      const checkpoint=Core.checkpoint(currentSession);
+      if(task)await DB.importData([],{currentSession:checkpoint},false,{expected:Long.meta(),sessionId:null});
+      else await DB.startSession(checkpoint);
       recordBetaEvent('SESSION_LAUNCHED', { programType: program.builtin ? 'builtin' : 'custom_or_other' });
       show('checkin');
     } catch (error) {
@@ -1219,12 +1281,12 @@
     $('#checkinOptions').open = !!currentSession.checkin;
     $('#trackingModeOption').hidden = !hasExercise(currentSession, 'stop_start');
     $('#detailedTracking').checked = !isSimple();
-    for (const [id,key,initial] of [['stress','stress',4],['fatigue','fatigue',3],['tension','pelvicTension',3]]) {
-      $('#'+id).value = draft[key] ?? initial;
-      $('#'+id+'V').textContent = draft[key] ?? '未填';
-    }
+    for (const [id,key] of checkinRatings) renderScore(id,draft[key]);
     pain = draft.pain === true;
-    $$('[data-pain]').forEach(button => button.classList.toggle('selected', String(draft.pain) === button.dataset.pain));
+    $$('[data-pain]').forEach(button => {
+      const selected=(draft.pain==null?'unset':String(draft.pain))===button.dataset.pain;
+      button.classList.toggle('selected',selected);button.setAttribute('aria-pressed',selected);
+    });
     renderCheckinPain();
   }
 
@@ -1386,6 +1448,8 @@
     shell.className = 'session-shell';
     shell.classList.toggle('simple-training', simple);
     $('#arousal').hidden = simple;
+    $('#arousalReference').hidden = simple;
+    $('#arousalReference').textContent = Core.arousalGuide[currentSession.arousal] || '';
     $('#levelDown').hidden = simple;
     $('#levelUp').hidden = simple;
     $('#explicitMarker').hidden = simple;
@@ -1590,41 +1654,77 @@
     event('SESSION_ENDED');
     currentSession.phase = 'REVIEW';
     persistCurrentSoon();
-    prefillReviewSignal(); configureReview(); show('review');
+    configureReview(); show('review');
   }
 
-  function configureReview() {
-    const hasStop = hasExercise(currentSession, 'stop_start');
-    $('#extraReview').open = false;
-    for (const id of ['control','relax']) {
-      const value = currentSession.review?.[id];
-      $('#'+id).value = value ?? 6;
-      $('#'+id+'V').textContent = value == null ? '未评分' : value + ' / 10';
+  const checkinRatings=[['stress','stress'],['fatigue','fatigue'],['tension','pelvicTension']];
+  const reviewChips=[['difficulty','difficulty'],['signals','signal'],['awareness','awareness']];
+  const experienceLabels={uncomfortable:'有些不舒适',same:'感觉和平时差不多',comfortable:'感觉更舒适'};
+
+  function renderScore(id,value){
+    const field=$('#'+id);
+    if(!field.options.length){
+      field.innerHTML='<option value="">未填 · 可跳过</option>'+
+        Array.from({length:11},(_,score)=>`<option value="${score}">${score} · ${escapeHtml(Core.scoreText(id,score))}</option>`).join('');
     }
-    for (const id of ['difficulty','signals','awareness']) {
-      const key = id === 'signals' ? 'signal' : id;
-      if (currentSession.review?.[key]) $$(`#${id} .chip`).forEach(c=>c.classList.toggle('selected',c.textContent.trim()===currentSession.review[key]));
+    field.value=value??'';
+    $('#'+id+'V').textContent=value==null?'':Core.scoreText(id,value);
+  }
+
+  function controlRating(session){
+    return Core.controlRatings.find(rating=>rating.key===session.review?.controlRating);
+  }
+
+  function numericControl(session){
+    return hasExercise(session,'stop_start')?session.review?.control??null:null;
+  }
+
+  function recordedFeeling(session){
+    const review=session.review||{};
+    if(hasExercise(session,'stop_start')){
+      if(review.controlRating==='unknown')return '无法判断';
+      if(controlRating(session))return controlRating(session).label;
+      if(Number.isFinite(numericControl(session)))return review.control+'/10';
     }
-    $('#reviewControlTitle').textContent = hasStop ? '今天整体控制感' : '今天整体训练状态';
-    $('#relaxReviewGroup').style.display = hasStop ? 'block' : 'none';
-    $('#awarenessReviewGroup').style.display = hasStop ? 'block' : 'none';
+    if(Object.hasOwn(experienceLabels,review.experience))return experienceLabels[review.experience];
+    if(!hasExercise(session,'stop_start')&&Number.isFinite(review.control))return review.control+'/10（旧版状态）';
+    return '—';
   }
-  function reviewSelection(groupId) {
-    const selected = $(`#${groupId} .chip.selected`);
-    return selected ? selected.textContent.trim() : null;
+
+  function practicedStop(session){
+    return hasExercise(session,'stop_start') && (session.cycles?.length>0 ||
+      session.events?.some(event=>event.type==='MODULE_STARTED'&&event.exerciseId==='stop_start'));
   }
-  function prefillReviewSignal() {
-    if (!currentSession) return;
-    const quick = (currentSession.events || []).filter(e => e.type === 'BODY_SIGNAL_RECORDED');
-    if (!quick.length) return;
-    const counts = {};
-    quick.forEach(e => { if (e.label) counts[e.label] = (counts[e.label] || 0) + 1; });
-    const top = Object.entries(counts).sort((a,b)=>b[1]-a[1])[0]?.[0];
-    if (!top) return;
-    const map = { '呼吸加快':'呼吸','屏住呼吸':'呼吸','盆底紧张':'盆底','腹部收紧':'腹部','大腿用力':'大腿','臀部用力':'臀部','紧张/焦虑':'紧张/焦虑' };
-    const target = map[top] || top;
-    $$('#signals .chip').forEach(c => c.classList.toggle('selected', c.textContent.trim() === target));
+
+  function configureReview(){
+    const review=currentSession.review||{}, stop=practicedStop(currentSession);
+    const started=Number.isFinite(currentSession.startedAt);
+    $('#extraReview').open=false;
+    $('#extraReview').hidden=!started;
+    $('#controlRatingGroup').hidden=!stop;
+    $('#controlScoreGroup').hidden=!stop;
+    $('#experienceGroup').hidden=stop||!started;
+    $('#relaxReviewGroup').hidden=!currentSession.events.some(event=>event.type==='STOP_STARTED');
+    $('#awarenessReviewGroup').hidden=!stop;
+    $('#controlRatings').innerHTML=[...Core.controlRatings,{key:'unknown',label:'无法判断',example:'本次没有尝试或记不清'},{key:'',label:'跳过'}].map(rating=>
+      `<label><input type="radio" name="controlRating" value="${rating.key}" ${rating.key&&review.controlRating===rating.key?'checked':''}><span>${rating.label}${rating.example?`<small class="muted">${rating.example}</small>`:''}</span></label>`).join('');
+    for(const choice of $$('[name="trainingExperience"]'))choice.checked=!!review.experience&&choice.value===review.experience;
+    for(const id of ['control','relax'])renderScore(id,review[id]);
+    for(const [id,key] of reviewChips){
+      for(const chip of $$(`#${id} .chip`)){
+        const selected=review[key]===chip.textContent.trim();
+        chip.classList.toggle('selected',selected);
+        chip.setAttribute('aria-pressed',selected);
+      }
+    }
   }
+
+  function updateReview(values){
+    if(currentSession?.phase!=='REVIEW')return;
+    currentSession.review={...currentSession.review,...values};
+    if(releaseTrainingLock||!navigator.locks)persistCurrentSoon();
+  }
+
   async function saveReview() {
     if(!currentSession||saveInFlight||currentSession.phase!=='REVIEW')return;
     saveInFlight=true;$('#saveReview').disabled=true;
@@ -1632,8 +1732,11 @@
     try{
       if (!await claimPendingTraining()) return;
       before = structuredClone(Long.meta());
-      const hasStop=hasExercise(currentSession,'stop_start');
-      currentSession.review={control:currentSession.review?.control??null,relax:hasStop?(currentSession.review?.relax??null):null,difficulty:reviewSelection('difficulty'),signal:reviewSelection('signals'),awareness:hasStop?reviewSelection('awareness'):null};
+      const draft=currentSession.review||{}, stop=practicedStop(currentSession);
+      currentSession.review={scaleVersion:2,control:stop?draft.control??null:null,
+        controlRating:stop?draft.controlRating??null:null,experience:stop?null:draft.experience??null,
+        relax:currentSession.events.some(event=>event.type==='STOP_STARTED')?draft.relax??null:null,
+        difficulty:draft.difficulty??null,signal:draft.signal??null,awareness:stop?draft.awareness??null:null};
       if (currentSession.events.at(-1)?.type === 'REVIEW_COMPLETED') currentSession.events.pop();
       event('REVIEW_COMPLETED',currentSession.review);
       await persistCurrentSoon();
@@ -1642,7 +1745,7 @@
       completed.pausedAt = null;
       completed.pausedFrom = null;
       if(completed.scheduleItemId)Long.markCompleted(completed.scheduleItemId,completed.id,completed.completion?.status);
-      await DB.completeSession(completed,Long.meta());
+      await DB.completeSession(completed,completed.scheduleItemId?Long.meta():{});
       releaseTraining();
       currentSession=completed;sessionCache=sessionCache.filter(s=>s.id!==completed.id);sessionCache.push(completed);sessionCache.sort((a,b)=>sessionTimestamp(a)-sessionTimestamp(b));
       $('#saveStatus').textContent='训练已保存';
@@ -1666,10 +1769,10 @@
     $('#sumOvershoot').textContent = fmt(currentSession.activeAccumulatedMs || 0);
     $('#sessionAIResult').textContent = '';
     $('#reviewWithAI').disabled = false;
-    $('#sumControl').textContent = m.control != null ? m.control + '/10' : '—';
+    $('#sumReviewLabel').textContent = hasExercise(currentSession,'stop_start')?'控制感':'练后感受';
+    $('#sumControl').textContent = recordedFeeling(currentSession);
     drawChartTo($('#chart'),currentSession);
     $('#sessionTimeline').innerHTML = timelineDetails(currentSession);
-    $('#summaryCoachCard').innerHTML=renderCoachReport(liveCoach(),true);
     if ($('#betaFeedbackCard')) $('#betaFeedbackCard').style.display = settings.betaTelemetryEnabled ? 'block' : 'none';
     const target=$('#associateTask');
     if(target){target.innerHTML='<option value="">保持自由训练记录</option>'+Long.tasks().filter(t=>t.status==='PLANNED'&&t.instance.status==='ACTIVE'&&matchesTask(currentSession,t)).map(t=>`<option value="${escapeHtml(t.id)}">${t.date} · ${escapeHtml(t.programSnapshot.name)}</option>`).join('');$('#associateCard').hidden=!!currentSession.scheduleItemId||target.options?.length===1;}
@@ -1682,14 +1785,19 @@
   function refreshDashboard() {
     const task = todayTask(), program = task ? Long.taskProgram(task) : Content.basicProgram;
     const week = weeklyPlanStats();
-    $('#dashboardStage').textContent = task ? '今日安排' : '随时可练';
-    $('#todayTitle').textContent = program.name;
-    $('#todayFocus').textContent = program.description || stage().focus;
+    const rest=Long.restToday(), next=rest&&Long.nextTraining();
+    const restLabel=rest&&!task;
+    $('#dashboardStage').textContent = task ? '今日安排' : restLabel?'今日休息':'随时可练';
+    $('#todayTitle').textContent = restLabel?'今天休息':program.name;
+    $('#todayFocus').textContent = restLabel
+      ? `本轮第 ${rest.index+1} 天 / 共 ${rest.length} 天`+(next?` · 下次练习 ${next.date}`:'')
+      : program.description || stage().focus;
+    $('#todayDuration').hidden = !!restLabel;
     $('#todayDuration').textContent = task ? '已排程' : '内置方案';
-    $('#todayModules').innerHTML = program.modules.map(m=>`<span class="pill">${escapeHtml(moduleLabel(m))}</span>`).join('');
+    $('#todayModules').innerHTML = restLabel?'':program.modules.map(m=>`<span class="pill">${escapeHtml(moduleLabel(m))}</span>`).join('');
     $('#startTraining').dataset.programId = program.id;
     $('#startTraining').dataset.scheduleId = task?.id || '';
-    $('#startTraining').textContent = currentSession && currentSession.phase !== 'COMPLETED' ? '继续上次训练' : '开始今日训练';
+    $('#startTraining').textContent = currentSession && currentSession.phase !== 'COMPLETED' ? '继续上次训练' : restLabel?'自由练一次':'开始今日训练';
     $('#weeklyPlanStatus').textContent = week.active
       ? `主计划 ${week.done}/${week.tasks.length} 次完成 · 部分完成 ${week.partial} · 跳过 ${week.skipped}`
       : '本周暂无主计划';
@@ -1699,8 +1807,8 @@
       $('#week'+id).closest?.('.progress-row')?.toggleAttribute('hidden',!progress.target);
       setProgress('#week'+id,'#week'+id+'Bar',progress);
     }
-    const last = sessionCache.filter(s=>!s.simulated&&!s.rehearsal&&Number.isFinite(s.review?.control)).at(-1);
-    $('#dashArt').textContent = last ? last.review.control + '/10' : '暂无';
+    const last = sessionCache.filter(s=>!s.simulated&&!s.rehearsal&&(controlRating(s)||Number.isFinite(numericControl(s)))).at(-1);
+    $('#dashArt').textContent = last ? recordedFeeling(last) : '暂无';
     $('#dashTrend').textContent = last ? formatDateTime(sessionTimestamp(last)) : '训练结束后可选评分';
     const todayExists = !!task;
     $('#deferToday').style.display = todayExists ? 'block' : 'none';
@@ -1803,35 +1911,41 @@
     const map={trends:'trendPanel',coach:'coachPanel',history:'historyPanel',compare:'comparePanel',decisions:'decisionsPanel',quality:'qualityPanel'};
     Object.entries(map).forEach(([k,id])=>$('#'+id).classList.toggle('active',k===tab));
   }
-  let trendMetric = 'control';
+  let trendMetric = 'rating';
   function renderTrendPanel() {
     const body = $('#trendPanelBody');
     const visible = analysisSessions().filter(session=>session.endedAt);
-    const metricOptions = {control:'主观控制感', manual:'停止到手动继续', art:'等级回落 ART'};
+    const metricOptions = {rating:'控制感 · 文字档位', control:'控制感 · 数字评分', manual:'停止到手动继续', art:'等级回落 ART'};
     const eligible = visible.filter(session=>{
-      if (trendMetric==='control') return Number.isFinite(session.review?.control);
+      if (trendMetric==='rating') return !!controlRating(session);
+      if (trendMetric==='control') return Number.isFinite(numericControl(session));
       return dataQuality(session).usableForTrend && Number.isFinite(trendMetric==='manual'
         ? computeMetrics(session).meanManualRecovery : computeMetrics(session).meanART);
     });
+    if(trendMetric==='rating'&&!eligible.length&&visible.some(session=>Number.isFinite(numericControl(session)))&&!document.getElementById('trendMetric')){
+      trendMetric='control';return renderTrendPanel();
+    }
     const anchor = eligible.at(-1);
     const key = anchor && Core.conditionKey(anchor);
-    const comparable = key ? visible.filter(session=>Core.conditionKey(session)===key).slice(-12) : [];
+    const comparable = key ? visible.filter(session=>Core.conditionKey(session)===key&&
+      (trendMetric!=='control'||(session.review?.scaleVersion||1)===(anchor.review?.scaleVersion||1))).slice(-12) : [];
     const rows = comparable.map(session=>{
       const metrics = computeMetrics(session);
       const duration = trendMetric==='manual' ? metrics.meanManualRecovery : metrics.meanART;
       return {
         label:dateKey(new Date(sessionTimestamp(session))).slice(5),
-        value:trendMetric==='control' ? metrics.control : dataQuality(session).usableForTrend && Number.isFinite(duration) ? duration/1000 : null
+        value:trendMetric==='rating' ? (controlRating(session)?Core.controlRatings.indexOf(controlRating(session)):null) : trendMetric==='control' ? metrics.control : dataQuality(session).usableForTrend && Number.isFinite(duration) ? duration/1000 : null
       };
     });
     const count = rows.filter(row=>Number.isFinite(row.value)).length;
     body.innerHTML = `<div class="card"><div class="section-head"><h2>近期趋势</h2><span class="muted">${count} 条可比记录</span></div>
       <label>查看指标<select class="text-input" id="trendMetric">${Object.entries(metricOptions).map(([key,label])=>`<option value="${key}" ${key===trendMetric?'selected':''}>${label}</option>`).join('')}</select></label>
-      <p class="small">${anchor ? escapeHtml(anchor.programSnapshot?.name||'训练') + ' · ' + (isSimple(anchor)?'简易记录':'精细记录') : '完成训练并留下记录后，趋势会显示在这里。'}</p>
+      <p class="small">${anchor ? escapeHtml(anchor.programSnapshot?.name||'训练') + ' · ' + (isSimple(anchor)?'简易记录':'精细记录') + (trendMetric==='control'&&!anchor.review?.scaleVersion?' · 旧版评分':'') : '完成训练并留下记录后，趋势会显示在这里。'}</p>
       <svg id="recentTrendChart" viewBox="0 0 480 180" role="img" aria-label="${metricOptions[trendMetric]}"></svg>
       <p class="small">每点代表一次训练。切换筛选条件可查看其他方案和记录模式。</p></div>`;
-    renderLineChart(document.getElementById('recentTrendChart'),rows,'value',trendMetric==='control'
-      ? {min:0,max:10} : {min:0,format:value=>value.toFixed(1)+' 秒'});
+    renderLineChart(document.getElementById('recentTrendChart'),rows,'value',trendMetric==='rating'
+      ? {min:0,max:4,padL:63,ticks:[0,.25,.5,.75,1],format:i=>Core.controlRatings[i].label}
+      : trendMetric==='control'?{min:0,max:10}:{min:0,format:value=>value.toFixed(1)+' 秒'});
   }
 
   function renderHistoryPanel() {
@@ -1840,7 +1954,7 @@
     if(!rows.length){body.innerHTML='<div class="card empty">还没有完成的训练记录。</div>';return;}
     body.innerHTML=`<div class="section-head"><h2>训练历史</h2><span class="muted">${rows.length} 次</span></div><div class="history-list">${rows.map(s=>{
       const m=computeMetrics(s), modules=(s.programSnapshot?.modules||[]).map(x=>EXERCISES[x.exerciseId]?.name||x.exerciseId);
-      return `<button class="session-row" data-history-id="${escapeHtml(s.id)}"><div class="session-row-top"><div><strong>${escapeHtml(s.programSnapshot?.name||'训练')}</strong><div class="small">${escapeHtml(formatDateTime(sessionTimestamp(s)))}</div></div><span style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end">${qualityBadge(s)}<span class="pill">Week ${s.planSnapshot?.week ?? '—'}</span></span></div><div class="modules">${modules.map(x=>`<span class="pill">${escapeHtml(x)}</span>`).join('')}</div><div class="session-row-meta"><span>Cycle ${m.cycles||0}</span><span>${isSimple(s)?'停止到继续':'ART'} ${seconds(isSimple(s)?m.meanManualRecovery:m.meanART)??'—'}</span><span>Stop ${Number.isFinite(m.meanStopLevel)?m.meanStopLevel.toFixed(1):'—'}</span><span>控制 ${m.control!=null?m.control+'/10':'—'}</span></div></button>`;
+      return `<button class="session-row" data-history-id="${escapeHtml(s.id)}"><div class="session-row-top"><div><strong>${escapeHtml(s.programSnapshot?.name||'训练')}</strong><div class="small">${escapeHtml(formatDateTime(sessionTimestamp(s)))}</div></div><span style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end">${qualityBadge(s)}</span></div><div class="modules">${modules.map(x=>`<span class="pill">${escapeHtml(x)}</span>`).join('')}</div><div class="session-row-meta"><span>完成 ${m.cycles||0} 轮</span><span>${isSimple(s)?'停止到继续':'ART'} ${seconds(isSimple(s)?m.meanManualRecovery:m.meanART)??'—'}</span><span>Stop ${Number.isFinite(m.meanStopLevel)?m.meanStopLevel.toFixed(1):'—'}</span><span>${escapeHtml(recordedFeeling(s))}</span></div></button>`;
     }).join('')}</div>`;
   }
   function renderComparePanel() {
@@ -1875,7 +1989,7 @@
     $('#historyDetailBody').innerHTML=`<div class="eyebrow">Session Detail</div><div class="screen-title">${escapeHtml(s.programSnapshot?.name||'训练')}</div><p class="muted">${escapeHtml(formatDateTime(sessionTimestamp(s)))}</p><div style="display:flex;gap:7px;flex-wrap:wrap;margin-bottom:12px">${qualityBadge(s)}</div>
       <div class="detail-grid"><div class="detail-stat"><span class="muted">控制循环</span><strong>${m.cycles||0}</strong></div><div class="detail-stat"><span class="muted">平均 ART</span><strong>${Number.isFinite(m.meanART)?Math.round(m.meanART/1000)+'s':'—'}</strong></div><div class="detail-stat"><span class="muted">平均 Stop</span><strong>${Number.isFinite(m.meanStopLevel)?m.meanStopLevel.toFixed(1):'—'}</strong></div><div class="detail-stat"><span class="muted">Level 8 比例</span><strong>${Number.isFinite(m.overshootRate)?Math.round(m.overshootRate*100)+'%':'—'}</strong></div></div>
       <div class="card"><h2>训练组成</h2><div class="modules">${modules.map(x=>`<span class="pill">${escapeHtml(x)}</span>`).join('')}</div><div class="small" style="margin-top:10px">提示模式：${escapeHtml(PROMPT_MODES[s.promptModeSnapshot]||s.promptModeSnapshot||'—')} · Stop ${s.stopThreshold??'—'} / Resume ${s.resumeThreshold??'—'}</div></div>
-      <div class="card"><h2>训练前与复盘</h2><table class="detail-table"><tbody><tr><th>压力</th><td>${s.checkin?.stress??'—'}/10</td><th>疲劳</th><td>${s.checkin?.fatigue??'—'}/10</td></tr><tr><th>盆底紧张</th><td>${s.checkin?.pelvicTension??'—'}/10</td><th>疼痛/不适</th><td>${s.checkin?.pain==null?'未填':s.checkin.pain?'有':'无'}</td></tr><tr><th>控制感</th><td>${s.review?.control??'—'}/10</td><th>难度</th><td>${escapeHtml(s.review?.difficulty||'—')}</td></tr><tr><th>提前觉察</th><td>${escapeHtml(s.review?.awareness||'—')}</td><th>主要信号</th><td>${escapeHtml(s.review?.signal||'—')}</td></tr></tbody></table></div>
+      <div class="card"><h2>训练前与复盘</h2><table class="detail-table"><tbody><tr><th>压力</th><td>${s.checkin?.stress??'—'}/10</td><th>疲劳</th><td>${s.checkin?.fatigue??'—'}/10</td></tr><tr><th>盆底紧张</th><td>${s.checkin?.pelvicTension??'—'}/10</td><th>疼痛/不适</th><td>${s.checkin?.pain==null?'未填':s.checkin.pain?'有':'无'}</td></tr><tr><th>${hasExercise(s,'stop_start')?'控制感':'练后感受'}</th><td>${escapeHtml(recordedFeeling(s))}</td><th>难度</th><td>${escapeHtml(s.review?.difficulty||'—')}</td></tr><tr><th>提前觉察</th><td>${escapeHtml(s.review?.awareness||'—')}</td><th>主要信号</th><td>${escapeHtml(s.review?.signal||'—')}</td></tr></tbody></table></div>
       ${cycles.length?`<div class="card"><div class="section-head"><h2>动停轮次</h2><span class="small">修订不会改写原始 Event</span></div><div style="overflow-x:auto"><table class="detail-table"><thead><tr><th>#</th><th>Stop</th><th>Resume</th><th>${isSimple(s)?'停止到继续':'ART'}</th><th>信号</th><th></th></tr></thead><tbody>${cycles.map((c,i)=>`<tr><td>${i+1}${c._revised?' *':''}</td><td>${c.stopLevel??'—'}</td><td>${c.resumeLevel??'—'}</td><td>${seconds(isSimple(s)?c.manualRecoveryMs:c.artMs)??'—'}</td><td>${(c.signals||[]).map(x=>escapeHtml(x)).join(', ')||'—'}</td><td><div class="cycle-actions"><button class="ghost" ${isSimple(s)?'hidden':''} data-revise-cycle="${i}" data-session-id="${escapeHtml(s.id)}">修订</button></div></td></tr>`).join('')}</tbody></table></div></div>`:''}
       <div class="card"><h2>数据质量</h2><div class="quality-summary"><div class="detail-stat"><span class="muted">质量</span><strong>${quality.label}</strong></div><div class="detail-stat"><span class="muted">内部评分</span><strong>${quality.score}</strong></div><div class="detail-stat"><span class="muted">趋势使用</span><strong>${quality.usableForTrend?'是':'否'}</strong></div></div><div class="reason">${quality.issues.length?quality.issues.map(x=>'• '+escapeHtml(x)).join('<br>'):'没有发现明显的数据完整性问题。'}</div></div>
       ${renderRevisionLogHtml(s)}
@@ -1963,8 +2077,8 @@
   }
 
   function exportCsvSummary() {
-    const headers=['date','sessionId','program','week','activeMinutes','cycles','meanARTSeconds','meanStopLevel','overshootRatePercent','control','difficulty','awareness','stress','fatigue','pelvicTension','promptMode','dataQuality','qualityScore','revised','simulated','trackingMode','meanManualRecoverySeconds','completion'];
-    const rows=sessionCache.filter(s=>s.endedAt&&!s.simulated&&!s.rehearsal).map(s=>{const m=computeMetrics(s);return [new Date(sessionTimestamp(s)).toISOString(),s.id,s.programSnapshot?.name||'',s.planSnapshot?.week??'',Number.isFinite(m.activeMinutes)?m.activeMinutes.toFixed(1):'',m.cycles,Number.isFinite(m.meanART)?(m.meanART/1000).toFixed(1):'',Number.isFinite(m.meanStopLevel)?m.meanStopLevel.toFixed(2):'',Number.isFinite(m.overshootRate)?(m.overshootRate*100).toFixed(1):'',m.control??'',m.difficulty??'',m.awareness??'',m.stress??'',m.fatigue??'',m.pelvicTension??'',s.promptModeSnapshot||'',dataQuality(s).label,dataQuality(s).score,dataQuality(s).revised?'yes':'no',s.simulated?'yes':'no',s.trackingMode||'detailed',Number.isFinite(m.meanManualRecovery)?(m.meanManualRecovery/1000).toFixed(1):'',s.completion?.status||''];});
+    const headers=['date','sessionId','program','week','activeMinutes','cycles','meanARTSeconds','meanStopLevel','overshootRatePercent','control','difficulty','awareness','stress','fatigue','pelvicTension','promptMode','dataQuality','qualityScore','revised','simulated','trackingMode','meanManualRecoverySeconds','completion','controlRating','trainingExperience','scoreScaleVersion'];
+    const rows=sessionCache.filter(s=>s.endedAt&&!s.simulated&&!s.rehearsal).map(s=>{const m=computeMetrics(s);return [new Date(sessionTimestamp(s)).toISOString(),s.id,s.programSnapshot?.name||'',s.planSnapshot?.week??'',Number.isFinite(m.activeMinutes)?m.activeMinutes.toFixed(1):'',m.cycles,Number.isFinite(m.meanART)?(m.meanART/1000).toFixed(1):'',Number.isFinite(m.meanStopLevel)?m.meanStopLevel.toFixed(2):'',Number.isFinite(m.overshootRate)?(m.overshootRate*100).toFixed(1):'',m.control??'',m.difficulty??'',m.awareness??'',m.stress??'',m.fatigue??'',m.pelvicTension??'',s.promptModeSnapshot||'',dataQuality(s).label,dataQuality(s).score,dataQuality(s).revised?'yes':'no',s.simulated?'yes':'no',s.trackingMode||'detailed',Number.isFinite(m.meanManualRecovery)?(m.meanManualRecovery/1000).toFixed(1):'',s.completion?.status||'',s.review?.controlRating||'',s.review?.experience||'',s.review?.scaleVersion??''];});
     const csv='\ufeff'+[headers,...rows].map(r=>r.map(csvCell).join(',')).join('\n');
     downloadBlob(csv,`training-summary-${dateKey()}.csv`,'text/csv;charset=utf-8'); showToast('CSV 摘要已生成');
   }
@@ -2083,6 +2197,7 @@
     $('#externalCoachModel').value = settings.externalCoachModel || '';
     $('#externalCoachToken').value = externalCoachToken || '';
     $('#externalCoachConsent').checked = !!settings.externalCoachConsent;
+    $('#rememberCoachToken').checked = readCoachToken().remember;
     $('#disableExternalCoach').hidden = !settings.externalCoachEnabled;
 
     $('#removeSimulation').hidden = !sessionCache.some(session=>session.simulated);
@@ -2097,7 +2212,7 @@
   async function deferToTomorrow() { await Long.defer();refreshDashboard();renderPlan(); }
   function restoreSchedule() {
     navTo('plan');
-    const details=$('#planAdvancedDetails');
+    const details=$('#planCalendarDetails');
     details.open=true;details.scrollIntoView({block:'start'});
   }
 
@@ -2144,12 +2259,13 @@
     $('#deferToday').addEventListener('click',deferToTomorrow);
     $('#restoreSchedule').addEventListener('click',restoreSchedule);
 
-    for (const [id,key] of [['stress','stress'],['fatigue','fatigue'],['tension','pelvicTension']]) {
+    for (const [id,key] of checkinRatings) {
       $('#'+id).addEventListener('input', () => {
         if (currentSession?.phase !== 'CHECK_IN') return;
         currentSession.checkin ||= {};
-        currentSession.checkin[key] = +$('#'+id).value;
-        $('#'+id+'V').textContent = $('#'+id).value;
+        const value=$('#'+id).value;
+        currentSession.checkin[key]=value===''?null:Number(value);
+        renderScore(id,currentSession.checkin[key]);
         persistCurrentSoon();
       });
     }
@@ -2162,8 +2278,8 @@
       if (currentSession?.phase !== 'CHECK_IN') return;
       pain=button.dataset.pain==='true';
       currentSession.checkin ||= {};
-      currentSession.checkin.pain = pain;
-      $$('[data-pain]').forEach(x=>x.classList.toggle('selected',x===button));
+      currentSession.checkin.pain = button.dataset.pain==='unset'?null:pain;
+      $$('[data-pain]').forEach(x=>{x.classList.toggle('selected',x===button);x.setAttribute('aria-pressed',x===button);});
       renderCheckinPain();
       persistCurrentSoon();
     }));
@@ -2198,55 +2314,84 @@
     $$('.signal-btn').forEach(b=>b.addEventListener('click',()=>recordQuickSignal(b.dataset.signal,b.dataset.label))); $('#closeMarker').addEventListener('click',closeQuickMarker);
     $('#finishNow').addEventListener('click',finishPrimaryAction); $('#cancelFinish').addEventListener('click',cancelFinishAction);
 
-    for (const id of ['control','relax']) $('#'+id).addEventListener('input',()=>{
-      if (currentSession?.phase !== 'REVIEW') return;
-      currentSession.review ||= {};
-      currentSession.review[id] = +$('#'+id).value;
-      $('#'+id+'V').textContent = $('#'+id).value+' / 10';
-      if (releaseTrainingLock || !navigator.locks) persistCurrentSoon();
+    for(const id of ['control','relax'])$('#'+id).addEventListener('change',event=>{
+      const value=event.target.value===''?null:Number(event.target.value);
+      renderScore(id,value);
+      updateReview({[id]:value,...(id==='control'&&value!=null?{controlRating:null}:{})});
+      if(id==='control'&&value!=null)for(const radio of $$('[name="controlRating"]'))radio.checked=false;
     });
-    ['difficulty','signals','awareness'].forEach(id=>$$(`#${id} .chip`).forEach(c=>c.addEventListener('click',()=>{$$(`#${id} .chip`).forEach(x=>x.classList.remove('selected'));c.classList.add('selected');})));
-    $('#saveReview').addEventListener('click',saveReview); $('#summaryDone').addEventListener('click',()=>{currentSession=null;navTo('dashboard');}); $('#summaryOpenCoach').addEventListener('click',()=>{currentSession=null;navTo('insights');setInsightTab('coach');});
+    $('#controlRatings').addEventListener('change',event=>{
+      updateReview({controlRating:event.target.value||null,control:null});
+      renderScore('control',null);
+    });
+    $('#trainingExperience').addEventListener('change',event=>updateReview({experience:event.target.value||null}));
+    for(const [id,key] of reviewChips)for(const chip of $$(`#${id} .chip`))chip.addEventListener('click',()=>{
+      for(const option of $$(`#${id} .chip`)){
+        option.classList.toggle('selected',option===chip);
+        option.setAttribute('aria-pressed',option===chip);
+      }
+      updateReview({[key]:chip.textContent.trim()==='跳过'?null:chip.textContent.trim()});
+    });
+    $('#saveReview').addEventListener('click',saveReview);
+    $('#summaryDone').addEventListener('click',()=>{currentSession=null;navTo('dashboard');});
+    $('#endWithPain').addEventListener('click',async()=>{
+      try{
+        if(!await claimPendingTraining())return;
+        currentSession.checkin={...currentSession.checkin,pain:true};
+        finishSession();
+      }catch(error){showToast(error.message);}
+    });
 
     $('#toggleHaptic').addEventListener('click',async()=>{settings.haptics=!settings.haptics;await DB.setMeta('settings',settings);renderSettings();vibrate(40);});
     $('#fetchCoachModels').addEventListener('click',fetchCoachModels);
+    $('#testCoachReview').addEventListener('click',testCoachReview);
     $('#coachModelList').addEventListener('change',event=>{
       if(event.target.value)$('#externalCoachModel').value=event.target.value;
     });
     $('#externalCoachModel').addEventListener('input',()=>{
       $('#coachModelList').value=$('#externalCoachModel').value;
     });
-    for (const id of ['externalCoachEndpoint','externalCoachModelsEndpoint','externalCoachToken']) {
-      $('#'+id).addEventListener('input',resetCoachModels);
+    for(const id of ['externalCoachEndpoint','externalCoachModelsEndpoint','externalCoachToken']){
+      $('#'+id).addEventListener('input',()=>{
+        resetCoachModels();
+        $('#coachTestStatus').textContent='';
+        if(id==='externalCoachEndpoint'){
+          $('#externalCoachConsent').checked=false;
+          $('#externalCoachToken').value='';
+        }
+      });
     }
+    $('#externalCoachModel').addEventListener('input',()=>{$('#coachTestStatus').textContent='';});
     $('#saveExternalCoach').addEventListener('click',async()=>{
       const button=$('#saveExternalCoach');
-      const endpoint=$('#externalCoachEndpoint').value.trim();
+      const rawEndpoint=$('#externalCoachEndpoint').value.trim();
+      const endpoint=validateExternalCoachEndpoint(rawEndpoint)||'';
       const model=$('#externalCoachModel').value.trim();
       const consent=$('#externalCoachConsent').checked;
       const modelsEndpoint=$('#externalCoachModelsEndpoint').value.trim();
       const token=$('#externalCoachToken').value.trim();
       try {
-        if(endpoint)coachModelsUrl(endpoint,modelsEndpoint);
+        if(rawEndpoint)coachModelsUrl(rawEndpoint,modelsEndpoint);
         if(endpoint&&!consent)throw new Error('启用外部 AI 前请勾选发送授权。');
         const next={
           externalCoachEndpoint:endpoint,
           externalCoachModelsEndpoint:endpoint?modelsEndpoint:'',
           externalCoachModel:model,
-          externalCoachConsent:consent,
+          externalCoachConsent:!!(endpoint&&consent),
+          externalCoachReviewConsent:endpoint===settings.externalCoachEndpoint&&consent?settings.externalCoachReviewConsent||'':'',
           externalCoachEnabled:!!(endpoint&&consent),
           coachChatMode:endpoint&&consent?settings.coachChatMode:'local'
         };
         button.disabled=true;
         await DB.setMeta('settings',{...settings,...next});
         Object.assign(settings,next);
-        externalCoachToken=token;
+        saveCoachToken(endpoint,token,$('#rememberCoachToken').checked);
         renderSettings(); renderCoachPanel();
         showToast(settings.externalCoachEnabled?'外部 AI 已启用':'AI 设置已保存');
       } catch(error) { showToast(error.message); }
       finally { button.disabled=false; }
     });
-    $('#disableExternalCoach').addEventListener('click',async()=>{settings.externalCoachEnabled=false;settings.externalCoachConsent=false;settings.coachChatMode='local';externalCoachToken='';await DB.setMeta('settings',settings);renderSettings();renderCoachPanel();showToast('外部 Coach 已关闭');});
+    $('#disableExternalCoach').addEventListener('click',async()=>{settings.externalCoachEnabled=false;settings.externalCoachConsent=false;settings.coachChatMode='local';settings.externalCoachReviewConsent='';saveCoachToken('','',false);await DB.setMeta('settings',settings);renderSettings();renderCoachPanel();showToast('外部 Coach 已关闭');});
     $('#promptMode').addEventListener('change',async event=>{
       const select=event.currentTarget, mode=select.value;
       if(!Object.hasOwn(PROMPT_MODES,mode))return;
@@ -2264,7 +2409,7 @@
         showToast('提示模式未保存：'+error.message);
       } finally { select.disabled=false; }
     });
-    $('#clearData').addEventListener('click',async()=>{if(!confirm('删除全部本地训练数据并重置训练计划？此操作无法撤销。'))return;await DB.clearTrainingData();Long.reset();acceptedParameters={stopThreshold:7,resumeThreshold:5};parameterHistory=[];sessionCache=[];customPrograms=[];adaptiveHistory=[];simulationAdaptiveHistory=[];coachHistory=[];coachChatMessages=[];externalCoachToken='';acceptanceResults={};betaTelemetry=[];betaInstallId='';plan=defaultPlan();adaptiveDecision=adaptiveEngine([]);await DB.setMeta('plan',plan);await DB.setMeta('customPrograms',customPrograms);await DB.setMeta('adaptiveDecision',adaptiveDecision);await DB.setMeta('adaptiveHistory',adaptiveHistory);await DB.setMeta('simulationAdaptiveHistory',simulationAdaptiveHistory);await DB.setMeta('coachHistory',coachHistory);await DB.setMeta('coachChatMessages',coachChatMessages);await DB.setMeta('acceptanceResults',acceptanceResults); await DB.setMeta('betaTelemetry',betaTelemetry); await DB.setMeta('betaInstallId',betaInstallId);await ensureSchedule(true);refreshDashboard();renderPlan();renderSettings();showToast('本地训练数据已清空');});
+    $('#clearData').addEventListener('click',async()=>{if(!confirm('删除全部本地训练数据并重置训练计划？此操作无法撤销。'))return;await DB.clearTrainingData();Long.reset();acceptedParameters={stopThreshold:7,resumeThreshold:5};parameterHistory=[];sessionCache=[];customPrograms=[];adaptiveHistory=[];simulationAdaptiveHistory=[];coachHistory=[];coachChatMessages=[];saveCoachToken('','',false);acceptanceResults={};betaTelemetry=[];betaInstallId='';plan=defaultPlan();adaptiveDecision=adaptiveEngine([]);await DB.setMeta('plan',plan);await DB.setMeta('customPrograms',customPrograms);await DB.setMeta('adaptiveDecision',adaptiveDecision);await DB.setMeta('adaptiveHistory',adaptiveHistory);await DB.setMeta('simulationAdaptiveHistory',simulationAdaptiveHistory);await DB.setMeta('coachHistory',coachHistory);await DB.setMeta('coachChatMessages',coachChatMessages);await DB.setMeta('acceptanceResults',acceptanceResults); await DB.setMeta('betaTelemetry',betaTelemetry); await DB.setMeta('betaInstallId',betaInstallId);await ensureSchedule(true);refreshDashboard();renderPlan();renderSettings();showToast('本地训练数据已清空');});
 
     $('#programList').addEventListener('click',async e=>{const start=e.target.closest('[data-start-program]'),sched=e.target.closest('[data-schedule-program]'),del=e.target.closest('[data-delete-program]');if(start)await launchProgram(start.dataset.startProgram,null).catch(error=>showToast(error.message));else if(sched)await scheduleProgram(sched.dataset.scheduleProgram);else if(del&&confirm('删除这个自定义训练方案？'))await deleteProgram(del.dataset.deleteProgram);});
     $('#scheduleCalendar').addEventListener('click',e=>{if(e.target.closest('.drag-handle'))return;const card=e.target.closest('[data-start-schedule]');if(!card)return;const item=(plan.schedule||[]).find(x=>x.id===card.dataset.startSchedule);if(item)launchProgram(item.programId,item.id);});
@@ -2302,6 +2447,7 @@
       customPrograms=await DB.getMeta('customPrograms',[]);
       adaptiveHistory=await DB.getMeta('adaptiveHistory',[]);
       simulationAdaptiveHistory=await DB.getMeta('simulationAdaptiveHistory',[]);
+      if(settings.externalCoachEnabled)externalCoachToken=readCoachToken().token;
       coachHistory=await DB.getMeta('coachHistory',[]);
       coachChatMessages=await DB.getMeta('coachChatMessages',[]);
       acceptanceResults=await DB.getMeta('acceptanceResults',{});
@@ -2348,74 +2494,120 @@
   const seconds = value=>Number.isFinite(value) ? (value/1000).toFixed(1)+' 秒' : null;
   function sessionReviewData(session) {
     const measures = computeMetrics(session), manual = isSimple(session);
-    const stopStart = hasExercise(session,'stop_start');
+    const stopStart = practicedStop(session);
     const facts = [
       ['有效时长',Number.isFinite(session.activeAccumulatedMs) ? fmt(session.activeAccumulatedMs) : null],
       ['完成轮次',stopStart ? String(measures.cycles) : null],
       [manual ? '停止到手动继续' : '等级回落 ART',seconds(manual ? measures.meanManualRecovery : measures.meanART)],
-      ['主观控制感',Number.isFinite(measures.control) ? measures.control+'/10' : null]
+      ['主观控制感',Number.isFinite(measures.control) ? measures.control+'/10' : controlRating(session)?.label],
+      ['练后感受',experienceLabels[session.review?.experience]]
     ].filter(([,value])=>value!=null);
     return {scope:'session',facts,pain:session.checkin?.pain===true,comparable:false,stopStart};
   }
 
   function weeklyReviewData() {
-    const week = weekStartKey(now()), previous = LongPlans.addDays(week,-7), stats = weeklyPlanStats();
-    const real = sessionCache.filter(session=>session.endedAt&&!session.simulated&&!session.rehearsal);
-    const thisWeek = real.filter(session=>weekStartKey(sessionTimestamp(session))===week);
-    const anchor = thisWeek.filter(session=>session.clockVersion===2 && Number.isFinite(session.review?.control)).at(-1);
-    const matching = anchor ? real.filter(session=>Core.conditionKey(session)===Core.conditionKey(anchor) && Number.isFinite(session.review?.control)) : [];
-    const recent = matching.filter(session=>weekStartKey(sessionTimestamp(session))===week);
-    const earlier = matching.filter(session=>weekStartKey(sessionTimestamp(session))===previous);
-    const comparable = Math.min(recent.length,earlier.length)>=3;
-    const facts = [['本周训练',thisWeek.length+' 次'],['自由训练',stats.free+' 次']];
-    if (stats.active) facts.push(['主计划完成',stats.done+'/'+stats.tasks.length],['部分完成',stats.partial+' 次'],['跳过',stats.skipped+' 次']);
-    facts.push(['同条件控制感样本',recent.length+' / '+earlier.length+' 条']);
-    if (comparable) {
-      facts.push(['本周平均控制感',average(recent.map(session=>session.review.control)).toFixed(1)+'/10']);
-      facts.push(['上周平均控制感',average(earlier.map(session=>session.review.control)).toFixed(1)+'/10']);
+    const today=dateKey(), recentStart=LongPlans.addDays(today,-6), previousStart=LongPlans.addDays(recentStart,-7);
+    const real=sessionCache.filter(session=>session.endedAt&&!session.simulated&&!session.rehearsal);
+    const within=(session,from,until)=>{
+      const day=dateKey(new Date(sessionTimestamp(session)));
+      return day>=from&&day<until;
+    };
+    const recent=real.filter(session=>within(session,recentStart,LongPlans.addDays(today,1)));
+    const anchor=recent.filter(session=>session.clockVersion===2&&(controlRating(session)||Number.isFinite(numericControl(session)))).at(-1);
+    const text=anchor&&!!controlRating(anchor);
+    const matched=anchor?real.filter(session=>Core.conditionKey(session)===Core.conditionKey(anchor)&&
+      (text?!!controlRating(session):Number.isFinite(numericControl(session))&&(session.review?.scaleVersion||1)===(anchor.review?.scaleVersion||1))):[];
+    const last=matched.filter(session=>within(session,recentStart,LongPlans.addDays(today,1)));
+    const previous=matched.filter(session=>within(session,previousStart,recentStart));
+    const comparable=Math.min(last.length,previous.length)>=3;
+    const facts=[['最近7天练习',recent.length+' 次'],['同条件控制感样本',last.length+' / '+previous.length+' 条']];
+    if(comparable&&text){
+      const describe=sessions=>Core.controlRatings.map(rating=>sessions.filter(session=>controlRating(session)===rating).length).join(' / ');
+      facts.push(['最近7天控制感档位次数',describe(last)],['之前7天控制感档位次数',describe(previous)]);
+    }else if(comparable){
+      facts.push(['最近7天平均控制感',average(last.map(numericControl)).toFixed(1)+'/10'],
+        ['之前7天平均控制感',average(previous.map(numericControl)).toFixed(1)+'/10']);
     }
-    return {scope:'week',facts,pain:thisWeek.at(-1)?.checkin?.pain===true,comparable,stopStart:thisWeek.some(session=>hasExercise(session,'stop_start'))};
+    return {scope:'week',facts,pain:recent.at(-1)?.checkin?.pain===true,comparable,stopStart:recent.some(practicedStop)};
   }
 
-  function reviewFacts(data) {
-    return `<ul>${data.facts.map(([label,value])=>`<li>${escapeHtml(label)} · ${escapeHtml(value)}</li>`).join('')}</ul>`;
+  function reviewFacts(data){
+    const hasRatings=data.facts.some(([label])=>label.endsWith('控制感档位次数'));
+    return `<ul>${data.facts.map(([label,value])=>`<li>${escapeHtml(label)} · ${escapeHtml(value)}</li>`).join('')}</ul>`+
+      (hasRatings?`<p class="small">档位顺序 · ${Core.controlRatings.map(rating=>rating.label).join(' → ')}</p>`:'');
   }
 
-  function localReviewText(data) {
-    if (data.pain) return {answer:'这次记录了不适，先暂停练习。持续或明显不适时，考虑寻求专业评估。',focus:''};
+  function localReviewText(data){
+    if(data.pain)return {answer:'这次记录了不适，先暂停练习。持续或明显不适时，考虑寻求专业评估。',focus:''};
     return {
-      answer: data.scope==='session' ? '已整理本次记录。可以结合时间线回看自己的感受。'
-        : data.comparable ? '已整理两周同条件的控制感记录，可查看自己的评分变化。'
-        : '两周同条件的评分样本不足，当前可以回看本周记录。',
-      focus: data.stopStart ? '下次可以沿用同一种记录方式，留意自己何时感觉应当停止。' : '下次可以继续记录练习后的主观感受。'
+      answer:data.scope==='session'?'已整理本次记录。可以结合时间线回看自己的感受。'
+        :data.comparable?'已整理最近两个时段内同条件的控制感记录。':'当前可以回看最近的记录。',
+      uncertainty:data.scope==='week'&&!data.comparable?'同条件的评分样本不足，暂时无法比较两个时段。':'',
+      focus:data.stopStart?'下次留意自己最早在何时感觉想停下来。':'下次可以记录练习后的感受。'
     };
   }
 
-  async function requestAIReview(buttonId,resultId,data) {
-    const button = $('#'+buttonId), result = $('#'+resultId);
-    const render = (reply,status)=>{result.innerHTML=`<p><strong>${escapeHtml(status)}</strong></p><p>${escapeHtml(reply.answer)}</p>${reviewFacts(data)}${reply.focus?`<p>下次关注 · ${escapeHtml(reply.focus)}</p>`:''}`;};
-    const fallback = localReviewText(data);
-    if (data.pain) { render(fallback,'本地复盘'); return; }
-    if (data.scope==='week' && data.facts[0]?.[1]==='0 次') {
-      render({answer:'本周还没有训练记录。',focus:''},'本地复盘');
+  function verifiedReview(reply,data,fallback){
+    const claims=data.facts.map(([label,value])=>label+' '+value);
+    const verify=(text,alternative)=>{
+      if(!text)return alternative;
+      const remaining=claims.reduce((value,fact)=>value.replaceAll(fact,''),text.normalize('NFKC'));
+      const withoutRelative=remaining.replaceAll(/下一次|再一次|一次练习/g,'');
+      return /\p{N}|[零〇一二两三四五六七八九十百千万点]+\s*(?:秒|分钟|次|轮|分值|分[，。]|成|天|%)/u.test(withoutRelative)?alternative:text;
+    };
+    return {answer:verify(reply.answer,fallback.answer),focus:verify(reply.focus,fallback.focus),
+      uncertainty:fallback.uncertainty||verify(reply.uncertainty,'')};
+  }
+
+  async function requestAIReview(buttonId,resultId,data,approved=false){
+    const button=$('#'+buttonId),result=$('#'+resultId),fallback=localReviewText(data);
+    const render=(reply,status,detail='')=>{
+      result.innerHTML=`<p><strong>${escapeHtml(status)}</strong></p><p>${escapeHtml(reply.answer)}</p>${reviewFacts(data)}
+        ${reply.uncertainty?`<p class="small">${escapeHtml(reply.uncertainty)}</p>`:''}
+        ${reply.focus?`<p>下次关注 · ${escapeHtml(reply.focus)}</p>`:''}
+        ${detail?`<p class="small" role="status">${escapeHtml(detail)}</p>`:''}`;
+    };
+    if(data.pain){render(fallback,'本地复盘');return;}
+    if(data.scope==='week'&&data.facts[0]?.[1]==='0 次'){
+      render({answer:'最近7天还没有训练记录。'},'本地复盘');return;
+    }
+    if(!externalCoachConfigured()){
+      render(fallback,'本地复盘');
+      result.insertAdjacentHTML('beforeend','<button type="button" class="ghost" data-open-ai-settings>配置 AI 分析</button>');
       return;
     }
-    if (!externalCoachConfigured()) {
-      render(fallback,'本地复盘 · AI 尚未启用');
-      if (data.scope==='session') result.insertAdjacentHTML('beforeend','<button type="button" class="ghost" data-open-ai-settings>配置外部 AI</button>');
+    const endpoint=validateExternalCoachEndpoint(settings.externalCoachEndpoint);
+    if(!approved&&settings.externalCoachReviewConsent!==endpoint){
+      render(fallback,'确认发送摘要');
+      result.insertAdjacentHTML('beforeend',`<p class="small">接收地址 · ${escapeHtml(endpoint)}。同时发送分析范围、样本可比状态及是否包含动停。</p>
+        <label><input type="checkbox" data-remember-review checked> 记住对该地址的授权</label>
+        <div class="mini-actions"><button type="button" class="primary" data-send-review>发送并分析</button><button type="button" class="ghost" data-cancel-review>取消</button></div>`);
+      result.querySelector('[data-cancel-review]').onclick=()=>render(fallback,'本地复盘');
+      result.querySelector('[data-send-review]').onclick=async()=>{
+        if(endpoint!==validateExternalCoachEndpoint(settings.externalCoachEndpoint)||!externalCoachConfigured())return requestAIReview(buttonId,resultId,data);
+        if(result.querySelector('[data-remember-review]').checked){
+          try{
+            await DB.setMeta('settings',{...settings,externalCoachReviewConsent:endpoint});
+            settings.externalCoachReviewConsent=endpoint;
+          }catch{}
+        }
+        await requestAIReview(buttonId,resultId,data,true);
+      };
       return;
     }
-    if (!confirm('将下面的摘要发送给外部 AI？\n\n'+data.facts.map(([label,value])=>label+' '+value).join('\n')+
-      (data.pain ? '\n最近记录有不适' : '')+'\n\n同时发送复盘范围、样本可比状态及是否包含动停。')) return;
-    button.disabled = true;
-    result.textContent = '正在解读训练摘要…';
-    try {
-      const reply = await callExternalCoach('请解读本次提供的训练摘要。',data);
-      if (/\p{N}/u.test(reply.answer+(reply.focus||''))) throw new Error('AI 解读包含未核对数字');
-      render(reply,'AI 解读');
-    } catch (error) {
-      render(fallback,'AI 暂不可用 · 本地复盘');
-    } finally { button.disabled = false; }
+    if(button.disabled)return;
+    button.disabled=true;
+    result.textContent='正在解读训练摘要…';
+    try{
+      const reply=await callExternalCoach('请解读本次提供的训练摘要。',data);
+      const display=verifiedReview(reply,data,fallback);
+      render(display,display.answer===reply.answer?'AI 解读':'本地复盘',
+        display.answer===reply.answer?'':'AI 的部分结论无法与当前摘要核对。');
+    }catch(error){
+      render(fallback,'本地复盘',error.message);
+      result.insertAdjacentHTML('beforeend','<div class="mini-actions"><button type="button" class="secondary" data-retry-review>重试</button><button type="button" class="ghost" data-open-ai-settings>修改连接</button></div>');
+      result.querySelector('[data-retry-review]').onclick=()=>requestAIReview(buttonId,resultId,data,approved);
+    }finally{button.disabled=false;}
   }
 
   function renderWeekCalendar() {
@@ -2478,7 +2670,7 @@
     on('endCheckin',finishSession);
     on('openRehearsal',()=>openRehearsal($('#detailedTracking').checked));
     on('cancelCheckin',async()=>{await DB.clearCurrentSession(currentSession?.id);releaseTraining();currentSession=null;updateReady();navTo('dashboard');showToast('已取消，原安排保留');});
-    on('associateTraining',async()=>{const id=$('#associateTask').value;if(!id||!currentSession)return;const task=Long.tasks().find(t=>t.id===id&&t.status==='PLANNED');if(!task||!matchesTask(currentSession,task))return;const before=structuredClone(Long.meta()),copy=structuredClone(currentSession);copy.scheduleItemId=id;copy.longPlanId=task.planId;Long.markCompleted(id,copy.id,copy.completion?.status);try{await DB.completeSession(copy,Long.meta(),false);currentSession=copy;sessionCache=sessionCache.map(s=>s.id===copy.id?copy:s);renderSummary();showToast('已关联，实际训练时间保留');}catch(error){Long.hydrate(before);throw error;}});
+    on('associateTraining',async()=>{const id=$('#associateTask').value;if(!id||!currentSession)return;const task=Long.tasks().find(t=>t.id===id&&t.status==='PLANNED');if(!task||!matchesTask(currentSession,task))return;const before=structuredClone(Long.meta()),copy=structuredClone(currentSession);copy.scheduleItemId=id;copy.longPlanId=task.planId;Long.markCompleted(id,copy.id,copy.completion?.status);try{await DB.importData([copy],Long.meta(),false,{expected:before,sessionId:null});currentSession=copy;sessionCache=sessionCache.map(s=>s.id===copy.id?copy:s);renderSummary();showToast('已关联，实际训练时间保留');}catch(error){Long.hydrate(before);throw error;}});
     on('showPrivacy',showCover);on('hidePrivacy',()=>$('#privacyCover').classList.remove('show'));
     on('exportPendingReview',exportJsonBackup);
     for(const [id,key] of [['toggleGestures','gestures'],['toggleHand','leftHanded'],['toggleWake','keepAwake']])on(id,async()=>{settings[key]=!settings[key];await DB.setMeta('settings',settings);renderPreferences();if(key==='keepAwake'){if(settings[key])requestWake();else releaseWake();}});
@@ -2518,6 +2710,7 @@
           $('#restorePassword').value='';$('#restorePasswordLabel').hidden=true;$('#restoreSubmit').textContent='确认提交导入';return;
         }
         await DB.importData(restorePreview.sessions,restorePreview.meta,restorePreview.replace);
+        if(restorePreview.replace)saveCoachToken('','',false);
         $('#restoreDialog').close();showToast('导入已提交，正在重新读取');location.reload();
       }catch(error){$('#restoreError').textContent=error.message;}
       finally{button.disabled=false;}

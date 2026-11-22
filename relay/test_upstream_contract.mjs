@@ -50,6 +50,21 @@ try{
   assert.equal(captured.body.text?.format?.strict,true);
   assert.equal(captured.headers.authorization,'Bearer dummy');
 
+  const review = {
+    ...reqBody, message:'请解读本次提供的训练摘要。',
+    context:{schema:reqBody.context.schema,privacy:reqBody.context.privacy,review:{
+      scope:'week',facts:[['最近7天练习','4 次'],['同条件控制感样本','4 / 3 条'],['最近7天控制感档位次数','0 / 1 / 0 / 2 / 1']],
+      pain:false,comparable:true,stopStart:true
+    }}
+  };
+  const reviewed=await post(review);assert.equal(reviewed.status,200);
+  const upstreamInput=JSON.parse(captured.body.input);
+  assert.deepEqual(upstreamInput.context.review.facts,review.context.review.facts);
+  assert.deepEqual(upstreamInput.conversation,[]);
+  const invalidReview=structuredClone(review);
+  invalidReview.context.review.facts[2][1]='0 / 2';
+  assert.equal((await post(invalidReview)).status,400);
+
   const badModel=structuredClone(reqBody);badModel.model='gpt-6-astra';
   const bm=await post(badModel);assert.equal(bm.status,400,'model allowlist enforced');
 

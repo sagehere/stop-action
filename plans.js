@@ -35,11 +35,91 @@
       if(!Number.isFinite(value)||value<=0||value>(timed?1800:30)||(!timed&&!Number.isInteger(value)))throw new Error('模块数量需在允许范围内');
     }
   }
+  const maxCycleDays=60;
+  function validateCycle(cycleDays,program){
+    if(!Array.isArray(cycleDays)||cycleDays.length<1||cycleDays.length>maxCycleDays||
+      Array.from(cycleDays).some(day=>typeof day!=='boolean')||!cycleDays.includes(true)){
+      throw new Error('一轮可设 1–60 天，至少安排一天练习');
+    }
+    validateProgram(program);
+  }
+  function makeCycleTemplate(program,cycleDays,name=program.name){
+    return validateTemplate({
+      schemaVersion:2,id:id('template'),name,program:clone(program),cycleDays:[...cycleDays],
+      contentVersion:window.TrainingContent.version,contentSnapshot:clone(window.TrainingContent.modules),
+      sourceIds:['eau','nhs']
+    });
+  }
+  const cycleBuiltin=()=>({...makeCycleTemplate(window.TrainingContent.basicProgram,[true,false,false,true,false,false,false],'基础跟练'),id:'builtin-cycle',builtin:true});
+  function uniformCycle(template){
+    if(template.schemaVersion===2)return template;
+    const first=template.weeks[0];
+    const schedule=week=>JSON.stringify([week.phase,[...week.days].sort(),week.program]);
+    if(!first.days.length||!template.weeks.every(week=>schedule(week)===schedule(first)))return null;
+    return {program:first.program,cycleDays:Array.from({length:7},(_,i)=>first.days.includes(i))};
+  }
+  function cycleAt(instance,date){
+    if(instance.cycles)return instance.cycles.find(segment=>date>=segment.startDate&&(!segment.until||date<segment.until));
+    if(instance.free||date<instance.startDate||dayDistance(instance.startDate,date)>=instance.templateSnapshot.weeks.length*7)return null;
+    const old=uniformCycle(instance.templateSnapshot);
+    return old?{...old,startDate:instance.startDate}:null;
+  }
+  function cycleDay(instance,date){
+    const segment=cycleAt(instance,date);
+    if(!segment||(instance.pausedFrom&&date>=instance.pausedFrom)||
+      (instance.pauses||[]).some(({from,until})=>date>=from&&date<until))return null;
+    const index=dayDistance(segment.startDate,date)%segment.cycleDays.length;
+    return {segment,index,practice:segment.cycleDays[index]};
+  }
+  function cycleTask(instance,date,day=cycleDay(instance,date)){
+    if(!instance.cycles||!day?.practice||instance.tasks.some(task=>(task.originalDate||task.date)===date))return null;
+    const program=day.segment.program;
+    return {schemaVersion:1,id:instance.id+':'+date,planId:instance.id,weekIndex:0,date,originalDate:date,
+      programId:program.id,programSnapshot:clone(program),status:'PLANNED'};
+  }
+  function tasksBetween(instance,from,until){
+    const tasks=instance.tasks.filter(task=>task.date>=from&&task.date<until);
+    if(!instance.cycles?.length)return tasks;
+    for(let date=from;date<until;date=addDays(date,1)){
+      const task=cycleTask(instance,date);
+      if(task)tasks.push(task);
+    }
+    return tasks;
+  }
+  function changeCycle(instance,startDate,cycleDays,program,isRunning){
+    parseDate(startDate);validateCycle(cycleDays,program);
+    const cycles=(instance.cycles||[]).filter(segment=>segment.startDate<startDate)
+      .map(segment=>({...segment,until:segment.until&&segment.until<startDate?segment.until:startDate}));
+    cycles.push({startDate,cycleDays:[...cycleDays],program:clone(program)});
+    const tasks=instance.tasks.filter(task=>task.date<startDate||task.status!=='PLANNED'||
+      !task.originalDate||task.date!==task.originalDate||task.userEdited||task.moved||
+      task.completedSessionId||task.lastPartialSessionId||isRunning(task.id));
+    return {...instance,cycles,tasks};
+  }
+  function validateCyclePlan(plan){
+    if(plan.pausedFrom!=null)parseDate(plan.pausedFrom);
+    if(plan.pauses!=null){
+      if(!Array.isArray(plan.pauses)||plan.pauses.length>10000)throw new Error('暂停记录无效');
+      for(const pause of plan.pauses)if(!pause||dayDistance(pause.from,pause.until)<1)throw new Error('暂停日期无效');
+    }
+    if(plan.cycles==null&&plan.templateSnapshot.schemaVersion===1)return;
+    if(!Array.isArray(plan.cycles)||!plan.cycles.length||plan.cycles.length>10000)throw new Error('循环安排无效');
+    let previous;
+    for(const segment of plan.cycles){
+      parseDate(segment.startDate);
+      if(segment.until!=null&&dayDistance(segment.startDate,segment.until)<1)throw new Error('循环日期无效');
+      if(previous&&(!previous.until||previous.until>segment.startDate))throw new Error('循环日期重叠');
+      validateCycle(segment.cycleDays,segment.program);
+      previous=segment;
+    }
+  }
   function validateTemplate(template){
-    if(!template||template.schemaVersion!==1||typeof template.name!=='string'||!template.name.trim()||template.name.length>80||!Array.isArray(template.weeks)||template.weeks.length<1||template.weeks.length>52)throw new Error('计划需要名称及1–52周');
+    if(!template||![1,2].includes(template.schemaVersion)||typeof template.name!=='string'||!template.name.trim()||template.name.length>80)throw new Error('计划名称或版本无效');
     if(typeof template.id!=='string'||!template.id||template.id.length>150)throw new Error('模板ID无效');
     if(template.sourceIds&&(!Array.isArray(template.sourceIds)||template.sourceIds.some(key=>!window.TrainingContent.sources[key])))throw new Error('来源引用无效');
     if(template.contentSnapshot){for(const [key,entry] of Object.entries(template.contentSnapshot)){if(!window.TrainingContent.modules[key]||!entry||typeof entry.short!=='string'||entry.short.length>2000||typeof entry.detail!=='string'||entry.detail.length>5000||!Array.isArray(entry.sourceIds)||entry.sourceIds.some(id=>!window.TrainingContent.sources[id]))throw new Error('内容快照无效');}}
+    if(template.schemaVersion===2){validateCycle(template.cycleDays,template.program);return template;}
+    if(!Array.isArray(template.weeks)||template.weeks.length<1||template.weeks.length>52)throw new Error('计划需要 1–52 周');
     template.weeks.forEach(week=>{
       if(typeof week.phase!=='string'||week.phase.length>80||typeof week.goal!=='string'||week.goal.length>1000)throw new Error('周目标无效');
       if(!Array.isArray(week.days)||week.days.length>7||new Set(week.days).size!==week.days.length||week.days.some(day=>!Number.isInteger(day)||day<0||day>6))throw new Error('每周训练日应为0–6且不能重复');
@@ -49,6 +129,10 @@
   function instantiate(template,startDate){
     validateTemplate(template);parseDate(startDate);
     const instance={schemaVersion:1,id:id('plan'),name:template.name,templateSnapshot:clone(template),startDate,status:'ACTIVE',confirmedWeek:0,confirmations:[],createdAt:Date.now(),tasks:[]};
+    if(template.schemaVersion===2){
+      instance.cycles=[{startDate,cycleDays:[...template.cycleDays],program:clone(template.program)}];
+      return instance;
+    }
     template.weeks.forEach((week,index)=>week.days.forEach(day=>instance.tasks.push({schemaVersion:1,id:id('task'),planId:instance.id,weekIndex:index,date:addDays(startDate,index*7+day),originalDate:addDays(startDate,index*7+day),programId:week.program.id||'standard',programSnapshot:clone(week.program),status:'PLANNED',createdAt:Date.now()})));
     return instance;
   }
@@ -128,5 +212,5 @@
     instance.tasks=(plan.schedule||[]).map(task=>({...clone(task),schemaVersion:1,planId:instance.id,weekIndex:0,programSnapshot:clone(programs.find(p=>p.id===task.programId)||baseProgram())})).concat(generated);
     instance.legacy=true;return instance;
   }
-  window.LongPlans={clone,id,dateKey,parseDate,addDays,dayDistance,monthCells,weekday,weeklyTemplate,weeklyAdjustment,baseProgram,makeTemplate,builtins,validateProgram,validateTemplate,instantiate,currentWeek,effectiveWeek,nextPhaseWeek,phaseDue,shiftPreview,repeatWeek,migrateLegacy};
+  window.LongPlans={maxCycleDays,cycleBuiltin,makeCycleTemplate,uniformCycle,cycleAt,cycleDay,cycleTask,tasksBetween,changeCycle,validateCyclePlan,clone,id,dateKey,parseDate,addDays,dayDistance,monthCells,weekday,weeklyTemplate,weeklyAdjustment,baseProgram,makeTemplate,builtins,validateProgram,validateTemplate,instantiate,currentWeek,effectiveWeek,nextPhaseWeek,phaseDue,shiftPreview,repeatWeek,migrateLegacy};
 })();

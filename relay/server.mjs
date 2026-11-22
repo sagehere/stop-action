@@ -129,13 +129,24 @@ function hasKeyDeep(value, blocked) {
 function rejectUnknownKeys(obj, allowed, label, errors) {
   for (const key of Object.keys(obj || {})) if (!allowed.has(key)) errors.push(`${label}.${key}: unsupported`);
 }
-const REVIEW_FACTS = new Set(['有效时长','完成轮次','停止到手动继续','等级回落 ART','主观控制感','本周训练','自由训练','主计划完成','部分完成','跳过','同条件控制感样本','本周平均控制感','上周平均控制感']);
+const REVIEW_FACTS = new Set(['有效时长','完成轮次','停止到手动继续','等级回落 ART','主观控制感','本周训练','自由训练','主计划完成','部分完成','跳过','同条件控制感样本','本周平均控制感','上周平均控制感','最近7天练习','最近7天平均控制感','之前7天平均控制感','最近7天控制感档位次数','之前7天控制感档位次数']);
 function validateReview(review, errors) {
   if (!isPlainObject(review)) { errors.push('review: invalid'); return; }
   rejectUnknownKeys(review,new Set(['scope','facts','pain','comparable','stopStart']),'review',errors);
   if (!['session','week'].includes(review.scope) || ['pain','comparable','stopStart'].some(key=>typeof review[key]!=='boolean')) errors.push('review: invalid flags');
   const values = /^(?:[0-9]{1,8}(?:\.[0-9])?)(?:(?: ?\/ ?|:)[0-9]{1,8})?(?: 秒| 次| 条)?$/;
-  if (!Array.isArray(review.facts)||review.facts.length<1||review.facts.length>10||review.facts.some(row=>!Array.isArray(row)||row.length!==2||!REVIEW_FACTS.has(row[0])||typeof row[1]!=='string'||!values.test(row[1]))) errors.push('review: invalid facts');
+  const controlLabels = new Set(['完全没能','偶尔能','约一半能','大多能','每次都能']);
+  const experiences = new Set(['有些不舒适','感觉和平时差不多','感觉更舒适']);
+  const valid = row=>{
+    if(!Array.isArray(row)||row.length!==2||typeof row[1]!=='string')return false;
+    const [label,value]=row;
+    if(label==='练后感受')return experiences.has(value);
+    if(!REVIEW_FACTS.has(label))return false;
+    if(label==='主观控制感')return values.test(value)||controlLabels.has(value);
+    if(label.endsWith('档位次数'))return /^\d{1,8}(?: \/ \d{1,8}){4}$/.test(value);
+    return values.test(value);
+  };
+  if (!Array.isArray(review.facts)||review.facts.length<1||review.facts.length>10||!review.facts.every(valid)) errors.push('review: invalid facts');
 }
 
 function validateRequest(body) {
@@ -251,7 +262,7 @@ function buildOpenAIRequest(body) {
     model: body.model || OPENAI_MODEL,
     store: false,
     instructions: body.context.review ? COACH_INSTRUCTIONS + `
-针对结构化训练复盘，只依据 review.facts 解释。answer 简短描述，focus 仅提供一个具体观察点。界面会单独显示数值，answer 和 focus 不写数字，evidence 返回空数组。comparable 为 false 时，仅描述已记录情况。stopStart 为 false 时，聚焦用户实际记录的模块和感受。` : COACH_INSTRUCTIONS,
+针对结构化训练复盘，只依据 review.facts 解释。answer 简短描述，focus 仅提供一个具体观察点。界面单独显示数值。优先用语言解释含义，如需引用量化数据，原样复制对应的一整项「标签 值」，不要用其他数字或自行计算推断。档位次数按完全没能、偶尔能、约一半能、大多能、每次都能排列。evidence 返回空数组。comparable 为 false 时，仅描述已记录情况。stopStart 为 false 时，聚焦用户实际记录的模块和感受。` : COACH_INSTRUCTIONS,
     input: JSON.stringify(userPayload),
     max_output_tokens: 1200,
     text: {
@@ -448,7 +459,7 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, {
       ok: true,
       service: 'coach-relay',
-      version: '2.2.3',
+      version: '2.3.0',
       upstream: MOCK_OPENAI ? 'mock' : 'openai-responses',
       modelConfigured: MOCK_OPENAI || !!OPENAI_API_KEY,
       model: OPENAI_MODEL,
@@ -458,7 +469,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/api/ready') {
     try { const assets=['index.html','app.js','db.js','content.js','training-core.js','plans.js','plan-ui.js','backup.js','manifest.webmanifest','icon.svg','sw.js'];const results=await Promise.all(assets.map(file=>stat(path.join(STATIC_ROOT,file))));if(results.some(file=>!file.isFile()))throw new Error('Missing runtime file'); }
     catch { return json(res, 503, { ok: false, service: 'stop-action', error: 'assets_unavailable' }); }
-    return json(res, 200, { ok: true, service: 'coach-relay', coreReady: true, version: '2.2.3', modelConfigured: MOCK_OPENAI || !!OPENAI_API_KEY }, corsHeaders(req));
+    return json(res, 200, { ok: true, service: 'coach-relay', coreReady: true, version: '2.3.0', modelConfigured: MOCK_OPENAI || !!OPENAI_API_KEY }, corsHeaders(req));
   }
   if (req.method === 'GET' && url.pathname === '/api/coach/ready') {
     const limiter = await rateLimiter.health();
@@ -467,7 +478,7 @@ const server = http.createServer(async (req, res) => {
     return json(res, ok ? 200 : 503, {
       ok,
       service: 'coach-relay',
-      version: '2.2.3',
+      version: '2.3.0',
       modelConfigured,
       rateLimiter: { ok: limiter.ok, backend: limiter.backend, degraded: !!limiter.degraded },
     }, corsHeaders(req));

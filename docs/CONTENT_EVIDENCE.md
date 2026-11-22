@@ -19,10 +19,10 @@
 | pelvic_coordination.short/detail | pelvic、pain | 可选；3秒/6秒、轮数不是早泄处方 |
 | stop_start.short/detail | nhs、eau、trial | 主观0–9、Stop/Resume阈值与循环数属于产品记录机制 |
 | pelvic_release.short/detail | pain、pelvic | 放松觉察；不用力向下推 |
-| checkin、review | eau、pain | 评分用于记录；单次波动不作疗效结论 |
+| checkin、review | eau、pain | 各档体感表述是原创记录参照，文字档位与数字分数独立展示；单次波动不作疗效结论 |
 | recovery、pause、trend | 产品指标/操作/统计说明 | ART是有效时间内的应用恢复记录，非临床指标；暂停不计时；同条件比较 |
 | coach、policy | eau及上述方法局限 | 解释摘要、不诊断、不改参数、不保证疗效 |
-| plan、模板来源引用 | eau、trial、rehab | 4/8/12周是产品组织周期，每周两次、两循环为可编辑初始安排 |
+| plan、模板来源引用 | eau、trial、rehab | 练休顺序和单次循环数是可编辑产品预设；旧计划保留原周期与阶段 |
 
 首次演练、保存/恢复/错误提示、日历状态和按钮说明属于产品操作说明；数据完整性评分、规则阈值、比较窗口各至少3条属于产品统计设计，不能标注为医学分界。疼痛或明显不适时可以暂停或结束并保存；不因紧张评分高自动增加盆底收缩。
 
