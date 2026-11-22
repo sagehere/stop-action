@@ -3,7 +3,7 @@ const {spawn}=require('node:child_process'),fs=require('node:fs/promises'),path=
 const playwright=require(process.argv[2]||'playwright');
 const engine=process.env.BROWSER||'chromium',channel=process.argv[3]||process.env.BROWSER_CHANNEL||undefined;
 const port=19777,base=`http://127.0.0.1:${port}`;
-const server=spawn(process.execPath,['relay/server.mjs'],{cwd:path.resolve(__dirname,'..'),env:{...process.env,PORT:String(port),HOST:'127.0.0.1',MOCK_OPENAI:'1',RATE_LIMIT_BACKEND:'memory',OPENAI_API_KEY_FILE:'',RELAY_BEARER_TOKEN_FILE:''},stdio:'ignore'});
+const server=spawn(process.execPath,['relay/server.mjs'],{cwd:path.resolve(__dirname,'..'),env:{...process.env,PORT:String(port),HOST:'127.0.0.1',MOCK_OPENAI:'1',RATE_LIMIT_BACKEND:'memory',OPENAI_API_KEY_FILE:'',RELAY_BEARER_TOKEN_FILE:'',OPENAI_MODEL:'gpt-6-astra',ALLOWED_MODELS:'gpt-6-astra,gpt-6-sol'},stdio:'ignore'});
 let browser;
 (async()=>{
   for(let i=0;i<100;i++){try{if((await fetch(base+'/api/ready')).ok)break;}catch{}await new Promise(r=>setTimeout(r,30));}
@@ -187,13 +187,41 @@ let browser;
   await page.waitForFunction(async()=> (await TrainingDB.getMeta('settings',{})).promptMode==='full');
   await page.locator('#trainingPreferences > summary').click();
   await page.locator('#mainNav [data-nav="insights"]').click();
+  assert.equal(await page.locator('#weeklyReviewWithAI').isVisible(),false);
+  await page.locator('[data-insight-tab="coach"]').click();
   await page.locator('#weeklyReviewWithAI').click();
-  await page.locator('#weeklyAIResult [data-open-ai-settings]').click();
+  assert.match(await page.locator('#weeklyAIResult').textContent(),/本地复盘/);
+  await page.locator('#coachPanelBody [data-open-ai-settings]').click();
   assert.equal(await page.locator('#aiSettings').evaluate(el=>el.open),true);
-  assert.equal(await page.locator('#externalCoachEndpoint').inputValue(),base+'/api/coach');
+  assert.equal(await page.locator('#useBundledRelay,#testBundledRelay').count(),0);
+  assert.equal(await page.locator('#externalCoachEndpoint').inputValue(),'');
+  await page.locator('#externalCoachEndpoint').fill(base+'/api/missing');
+  await page.locator('#fetchCoachModels').click();
+  await page.waitForFunction(()=>document.getElementById('coachModelsStatus').textContent.includes('找不到模型列表'));
+  await page.locator('#externalCoachEndpoint').fill(base+'/api/coach');
+  await page.locator('#externalCoachToken').fill('temporary-test-token');
+  const modelRequest=page.waitForRequest(req=>req.url()===base+'/api/coach/models');
+  await page.locator('#fetchCoachModels').click();
+  const req=await modelRequest;
+  assert.equal(req.method(),'GET');
+  assert.equal((await req.allHeaders()).authorization,'Bearer temporary-test-token');
+  assert.equal(req.postData(),null);
+  await page.locator('#coachModelList').selectOption('gpt-6-sol');
+  assert.equal(await page.locator('#externalCoachModel').inputValue(),'gpt-6-sol');
   await page.locator('#externalCoachConsent').check();
   await page.locator('#saveExternalCoach').click();
-  await page.waitForFunction(async()=> (await TrainingDB.getMeta('settings',{})).externalCoachEnabled);
+  await page.waitForFunction(async()=>{
+    const settings=await TrainingDB.getMeta('settings',{});
+    return settings.externalCoachEnabled&&settings.externalCoachModel==='gpt-6-sol'&&!Object.hasOwn(settings,'externalCoachToken');
+  });
+  await page.locator('#mainNav [data-nav="insights"]').click();
+  await page.locator('#coachMode').selectOption('external');
+  await page.locator('#coachQuestion').fill('我该关注哪些趋势？');
+  const coachRequest=page.waitForRequest(req=>req.method()==='POST'&&req.url()===base+'/api/coach');
+  await page.locator('#sendCoachQuestion').click();
+  assert.equal((await coachRequest).postDataJSON().model,'gpt-6-sol');
+  await page.waitForFunction(()=>document.getElementById('coachMessages').textContent.includes('外部 AI'));
+  await page.locator('#mainNav [data-nav="settings"]').click();
   await page.locator('#disableExternalCoach').click();
   await page.waitForFunction(async()=> !(await TrainingDB.getMeta('settings',{})).externalCoachEnabled);
 
@@ -245,8 +273,8 @@ let browser;
   await page.locator('[data-nav="plan"]').first().click();await page.locator("#planProgramsDetails").evaluate(details=>{details.open=true;});await page.locator('[data-start-program="mindfulness_only"]').click();await page.locator('#continueCheckin').click();await page.locator('#skipModule').click({clickCount:2});assert.equal(await page.locator('#moduleGuide.active').count(),1);await page.waitForFunction(async()=>{const s=await TrainingDB.getCurrentSession();return s?.moduleIndex===1;});const repeated=await page.evaluate(()=>TrainingDB.getCurrentSession());assert.equal(repeated.moduleResults.length,1);await page.locator('#guidedPause').click();await page.locator('#endFromPause').click();await page.locator('#saveReview').click();await page.locator('#summaryDone').click();
   // Verify own assets are cached, API remains live, and core training starts offline.
   await page.evaluate(()=>navigator.serviceWorker.ready);await page.reload();await page.waitForFunction(()=>document.body.dataset.appReady==='true');
-  const cacheKeys=await page.evaluate(()=>caches.keys());assert.ok(cacheKeys.includes('stop-action-v22-my'));
-  await page.evaluate(()=>fetch('/api/health'));const cachedApi=await page.evaluate(async()=>{const cache=await caches.open('stop-action-v22-my');return !!await cache.match('/api/health');});assert.equal(cachedApi,false);
+  const cacheKeys=await page.evaluate(()=>caches.keys());assert.ok(cacheKeys.includes('stop-action-v22-models'));
+  await page.evaluate(()=>fetch('/api/health'));const cachedApi=await page.evaluate(async()=>{const cache=await caches.open('stop-action-v22-models');return !!await cache.match('/api/health');});assert.equal(cachedApi,false);
   if(engine==='webkit'){
     // Playwright #42775: setOffline incorrectly blocks even Service Worker responses.
     // Stop the origin instead; prove an uncached browser cannot load it before testing cache recovery.

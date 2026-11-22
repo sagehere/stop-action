@@ -10,7 +10,7 @@
   const DEFAULT_STOP_THRESHOLD = 7;
   const DEFAULT_RESUME_THRESHOLD = 5;
   const DAY_MS = 86400000;
-  const APP_VERSION = '2.2.2';
+  const APP_VERSION = '2.2.3';
   const Core = window.TrainingCore, Content = window.TrainingContent, Long = window.LongPlanUI, Backup = window.TrainingBackup;
   let acceptedParameters={stopThreshold:7,resumeThreshold:5},parameterHistory=[],saveInFlight=false,guideLastElapsed=0,checkpointTimer=null,wakeLock=null,waitingWorker=null,moduleActionReadyAt=0;
   let pendingRestore=null,restorePreview=null,updateRequested=false,insightFilter={plan:'',stage:'',program:'',mode:'',clock:'2',from:'',to:''};
@@ -68,6 +68,7 @@
   let coachHistory = [];
   let coachChatMessages = [];
   let externalCoachToken = '';
+  let coachModelsRequest = null;
   let acceptanceResults = {};
   let betaTelemetry = [];
   let betaInstallId = '';
@@ -788,36 +789,100 @@
   function validateExternalCoachEndpoint(raw) {
     try {
       const u=new URL(String(raw||'').trim());
+      if(u.username||u.password)return null;
       if(u.protocol==='https:')return u.toString();
       if(u.protocol==='http:' && ['localhost','127.0.0.1','[::1]'].includes(u.hostname))return u.toString();
     } catch(_) {}
     return null;
   }
-  function bundledRelayEndpoint() {
-    try {
-      if(typeof location!=='undefined' && /^https?:$/.test(location.protocol)) return `${location.origin}/api/coach`;
-    } catch(_) {}
-    return null;
+  function coachModelsUrl(endpoint, override='') {
+    const valid = validateExternalCoachEndpoint(endpoint);
+    if (!valid) throw new Error('请先填写有效的教练连接地址，使用 HTTPS。');
+    const coachUrl = new URL(valid);
+    if (override) {
+      let requested;
+      try { requested = new URL(override, coachUrl.origin); } catch {}
+      if (!requested || requested.protocol !== coachUrl.protocol || requested.origin !== coachUrl.origin || requested.username || requested.password) {
+        throw new Error('模型列表地址须与教练连接地址同源。');
+      }
+      requested.hash = '';
+      return requested.href;
+    }
+    coachUrl.pathname = coachUrl.pathname.replace(/\/+$/, '') + '/models';
+    coachUrl.search = '';
+    coachUrl.hash = '';
+    return coachUrl.href;
   }
-  function bundledRelayHealthEndpoint() {
-    try {
-      if(typeof location!=='undefined' && /^https?:$/.test(location.protocol)) return `${location.origin}/api/coach/ready`;
-    } catch(_) {}
-    return null;
+
+  function resetCoachModels() {
+    coachModelsRequest?.abort();
+    coachModelsRequest = null;
+    $('#fetchCoachModels').disabled = false;
+    $('#coachModelChoice').hidden = true;
+    $('#coachModelList').replaceChildren();
+    $('#coachModelsStatus').textContent = '';
   }
-  async function testBundledRelayHealth() {
-    const endpoint=bundledRelayHealthEndpoint();
-    if(!endpoint)throw new Error('当前页面不是通过 HTTP/HTTPS 打开。');
-    const controller=new AbortController();
-    const timer=setTimeout(()=>controller.abort(),5000);
+
+  async function fetchCoachModels() {
+    resetCoachModels();
+    const status = $('#coachModelsStatus');
+    const request = new AbortController();
+    coachModelsRequest = request;
+    $('#fetchCoachModels').disabled = true;
+    const timer = setTimeout(()=>request.abort(),8000);
     try {
-      const r=await fetch(endpoint,{cache:'no-store',headers:{'Accept':'application/json'},signal:controller.signal});
-      if(!r.ok)throw new Error(`HTTP ${r.status}`);
-      const data=await r.json();
-      if(!data?.ok||data?.service!=='coach-relay')throw new Error('返回内容不是 Stop Action Coach Relay。');
-      return data;
-    } finally { clearTimeout(timer); }
+      const url = coachModelsUrl($('#externalCoachEndpoint').value.trim(),$('#externalCoachModelsEndpoint').value.trim());
+      const headers = {Accept:'application/json'};
+      const token = $('#externalCoachToken').value.trim();
+      if (token) headers.Authorization = 'Bearer '+token;
+      status.textContent = '正在拉取模型列表…';
+      const response = await fetch(url,{
+        method:'GET',headers,signal:request.signal,cache:'no-store',
+        credentials:'omit',redirect:'error',referrerPolicy:'no-referrer'
+      });
+      if (request !== coachModelsRequest) return;
+      if (!response.ok) {
+        const message = {
+          401:'验证失败，请检查临时令牌。',
+          403:'端点拒绝访问模型列表，请检查令牌或跨域授权。',
+          404:'找不到模型列表。可自定义列表地址，或手动输入模型。'
+        }[response.status];
+        status.textContent = message || `拉取失败（HTTP ${response.status}），可手动输入模型。`;
+        return;
+      }
+      const payload = await response.json();
+      if (request !== coachModelsRequest) return;
+      if (!Array.isArray(payload?.data)) {
+        status.textContent = '端点未返回模型列表，可手动输入模型。';
+        return;
+      }
+      const models = [...new Set(payload.data.map(model=>model?.id)
+        .filter(id=>typeof id==='string'&&id.trim()===id&&id.length>0&&id.length<=80))].sort();
+      if (!models.length) {
+        status.textContent = '端点没有返回可选模型，可手动输入模型。';
+        return;
+      }
+      const select = $('#coachModelList');
+      select.add(new Option('选择模型',''));
+      models.forEach(id=>select.add(new Option(id,id)));
+      if(models.includes($('#externalCoachModel').value))select.value=$('#externalCoachModel').value;
+      $('#coachModelChoice').hidden = false;
+      status.textContent = `已找到 ${models.length} 个模型。`;
+    } catch(error) {
+      if (request !== coachModelsRequest) return;
+      status.textContent = error.name==='AbortError' ? '拉取超时，请重试。'
+        : error instanceof TypeError ? '无法读取模型列表，请检查端点连通性和跨域授权。'
+        : error instanceof SyntaxError ? '端点未返回有效的模型列表，可手动输入模型。'
+        : error.message;
+    } finally {
+      clearTimeout(timer);
+      if (request===coachModelsRequest) {
+        coachModelsRequest = null;
+        $('#fetchCoachModels').disabled = false;
+      }
+    }
   }
+
   function externalCoachConfigured() {
     return !!(settings.externalCoachEnabled && settings.externalCoachConsent && validateExternalCoachEndpoint(settings.externalCoachEndpoint));
   }
@@ -870,26 +935,38 @@
     if(m.uncertainty)extra.push(`不确定性：${m.uncertainty}`);
     if(m.safetyNotice)extra.push(`安全：${m.safetyNotice}`);
     const ev=(m.evidence||[]).map(e=>`${e.label}：${e.value}`);
-    return `<div class="coach-msg ${m.role==='user'?'user':'assistant'}">${escapeHtml(m.text)}${extra.length?`<div class="small" style="margin-top:7px">${extra.map(escapeHtml).join('<br>')}</div>`:''}${ev.length?`<div class="external-evidence">${ev.map(x=>`<div>${escapeHtml(x)}</div>`).join('')}</div>`:''}<span class="msg-meta">${escapeHtml(m.role==='user'?'你':(m.mode==='external'?'外部 LLM':'本地 Coach'))}</span></div>`;
+    return `<div class="coach-msg ${m.role==='user'?'user':'assistant'}">${escapeHtml(m.text)}${extra.length?`<div class="small" style="margin-top:7px">${extra.map(escapeHtml).join('<br>')}</div>`:''}${ev.length?`<div class="external-evidence">${ev.map(x=>`<div>${escapeHtml(x)}</div>`).join('')}</div>`:''}<span class="msg-meta">${escapeHtml(m.role==='user'?'你':(m.mode==='external'?'外部 AI':'本地教练'))}</span></div>`;
   }
   function coachChatHtml() {
     const messages=coachChatMessages.slice(-20);
     const externalReady=externalCoachConfigured();
-    const mode=settings.coachChatMode==='external'?'external':'local';
-    return `<div class="card"><div class="section-head"><h2>教练对话</h2><span class="muted">${mode==='external'?'外部 LLM':'本地规则'}</span></div><div class="coach-mode-row"><button class="choice ${mode==='local'?'selected':''}" data-coach-mode="local">本地 Coach</button><button class="choice ${mode==='external'?'selected':''}" data-coach-mode="external">外部 LLM</button><button class="ghost" id="clearCoachChat">清空对话</button></div><div class="adapter-state"><span><span class="status-dot ${externalReady?'on':''}"></span>${externalReady?'外部 Adapter 已授权':'外部 Adapter 未启用'}</span><span class="small">不写训练参数</span></div>${mode==='external'&&!externalReady?'<div class="adapter-warning">请先到“我的 → 外部 LLM Adapter”填写 HTTPS Relay，并明确勾选发送授权。</div>':''}<div class="coach-quick"><button class="ghost" data-coach-quick="这次哪里最值得关注？">这次关注什么</button><button class="ghost" data-coach-quick="为什么最近 ART 会波动？">解释 ART 波动</button><button class="ghost" data-coach-quick="我的身体预警信号怎么看？">身体信号</button><button class="ghost" data-coach-quick="下次训练我应该关注什么？">下次怎么练</button></div><div id="coachMessages" class="coach-messages">${messages.length?messages.map(coachMessageHtml).join(''):'<div class="empty-compact">可以直接问“为什么最近会波动？”、“下次关注什么？”；本地模式完全离线。</div>'}</div><div class="coach-compose"><textarea id="coachQuestion" class="text-input" maxlength="1600" placeholder="问一个关于你训练数据的问题…"></textarea><button id="sendCoachQuestion" class="primary">发送</button></div><div id="coachChatError" class="coach-error" style="display:none"></div></div>`;
+    const external=externalReady&&settings.coachChatMode==='external';
+    const modeControl=externalReady
+      ? `<label class="small">回答方式<select class="text-input" id="coachMode">
+          <option value="local" ${!external?'selected':''}>本地教练</option>
+          <option value="external" ${external?'selected':''}>外部 AI</option>
+        </select></label>`
+      : '<button type="button" class="ghost" data-open-ai-settings>配置外部 AI</button>';
+    return `<div class="card coach-card">
+      <div class="section-head"><h2>教练对话</h2>${!externalReady?'<span class="small">本地教练</span>':''}</div>
+      ${modeControl}
+      <div id="coachMessages" class="coach-messages" ${messages.length?'':'hidden'}>${messages.map(coachMessageHtml).join('')}</div>
+      <div class="coach-compose"><textarea id="coachQuestion" class="text-input" aria-label="教练问题" maxlength="1600" placeholder="想了解哪项训练记录？"></textarea><button id="sendCoachQuestion" class="primary">发送</button></div>
+      ${messages.length?'<div class="coach-mode-row"><button class="ghost" id="clearCoachChat">清空对话</button></div>':''}
+    </div>`;
   }
   async function sendCoachQuestion(question) {
     const q=String(question||'').trim(); if(!q)return;
     coachChatMessages.push({id:'M'+now()+Math.random().toString(36).slice(2,5),role:'user',text:q,at:now()});
     await persistCoachChat(); renderCoachPanel();
     try {
-      const mode=settings.coachChatMode==='external'?'external':'local';
+      const mode=externalCoachConfigured()&&settings.coachChatMode==='external'?'external':'local';
       const reply=mode==='external'?await callExternalCoach(q):sanitizeCoachChatOutput(localCoachChatReply(q));
       coachChatMessages.push({id:'M'+now()+Math.random().toString(36).slice(2,5),role:'assistant',mode,text:reply.answer,focus:reply.focus,evidence:reply.evidence,uncertainty:reply.uncertainty,safetyNotice:reply.safetyNotice,at:now()});
       await persistCoachChat(); renderCoachPanel();
     } catch(err) {
       const fallback=sanitizeCoachChatOutput(localCoachChatReply(q));
-      coachChatMessages.push({id:'M'+now()+Math.random().toString(36).slice(2,5),role:'assistant',mode:'local',text:`外部 Coach 暂不可用：${String(err?.message||err)}\n\n已回退到本地解释：${fallback.answer}`,focus:fallback.focus,evidence:fallback.evidence,uncertainty:fallback.uncertainty,safetyNotice:fallback.safetyNotice,at:now()});
+      coachChatMessages.push({id:'M'+now()+Math.random().toString(36).slice(2,5),role:'assistant',mode:'local',text:`外部 AI 暂不可用：${String(err?.message||err)}\n\n已回退到本地解释：${fallback.answer}`,focus:fallback.focus,evidence:fallback.evidence,uncertainty:fallback.uncertainty,safetyNotice:fallback.safetyNotice,at:now()});
       await persistCoachChat(); renderCoachPanel();
     }
   }
@@ -915,16 +992,20 @@
   }
   function renderCoachPanel() {
     const body=$('#coachPanelBody');
-    const report=liveCoach();
+    const reportOpen=body.querySelector('#localCoachReport')?.open;
+    const historyOpen=body.querySelector('#coachReportHistory')?.open;
     const history=[...coachHistory].sort((a,b)=>(b.generatedAt||0)-(a.generatedAt||0)).slice(0,10);
-    const external=externalCoachPayload(report.context);
-    body.innerHTML=`<div class="card coach-card">${renderCoachReport(report,false)}<div class="coach-actions"><button id="saveCoachReport" class="secondary">保存这次复盘</button><button id="copyCoachContext" class="ghost">复制 AI 上下文</button></div><details style="margin-top:12px"><summary class="small">查看最小化结构化上下文</summary><pre id="coachContextPreview" class="coach-context">${escapeHtml(JSON.stringify(external,null,2))}</pre></details></div>${coachChatHtml()}<div class="card"><h2>Coach 与 Training Engine 的边界</h2><p class="muted" style="line-height:1.6">Coach 只能解释训练数据与下一次关注点。无论本地还是外部模式，都没有权限修改 Stop / Resume 阈值、训练周次、Safety Flag 或日程；这些仍由确定性的 Training Engine 处理。</p></div><div class="section-head"><h2>教练复盘历史</h2><span class="muted">${coachHistory.length} 条</span></div>${history.length?`<div class="coach-history">${history.map(h=>`<div class="decision-item"><div class="small">${escapeHtml(formatDateTime(h.generatedAt))}</div><strong>${escapeHtml(h.output?.headline||'Coach 复盘')}</strong><div class="reason">${escapeHtml(h.output?.summary||'')}</div></div>`).join('')}</div>`:'<div class="card empty-compact">完成训练或点击“保存这次复盘”后，这里会保留本地 Coach 历史。</div>'}`;
+    body.innerHTML=coachChatHtml()+`
+      <details class="card my-section" id="localCoachReport" ${reportOpen?'open':''}>
+        <summary>本地复盘</summary>
+        ${renderCoachReport(liveCoach())}
+        <button id="saveCoachReport" class="secondary" type="button">保存本次复盘</button>
+      </details>
+      ${history.length?`<details class="card my-section" id="coachReportHistory" ${historyOpen?'open':''}>
+        <summary>复盘记录 <span class="small">${history.length} 条</span></summary>
+        ${history.map(h=>`<div class="decision-item"><div class="small">${escapeHtml(formatDateTime(h.generatedAt))}</div><strong>${escapeHtml(h.output?.headline||'教练复盘')}</strong><div class="reason">${escapeHtml(h.output?.summary||'')}</div></div>`).join('')}
+      </details>`:''}`;
     requestAnimationFrame(()=>{const box=document.querySelector('#coachMessages');if(box)box.scrollTop=box.scrollHeight;});
-  }
-  async function copyCoachContext() {
-    const payload=JSON.stringify(externalCoachPayload(buildCoachContext()),null,2);
-    try { if(navigator.clipboard?.writeText) await navigator.clipboard.writeText(payload); else throw new Error('clipboard unavailable'); showToast('已复制最小化 AI 上下文'); }
-    catch(_) { const ta=document.createElement('textarea');ta.value=payload;document.body.appendChild(ta);ta.select?.();try{document.execCommand?.('copy');showToast('已复制最小化 AI 上下文');}catch(__){showToast('当前浏览器无法自动复制');}ta.remove(); }
   }
 
   function defaultPlan() {
@@ -1996,7 +2077,9 @@
     renderPreferences();
 
     $('#externalCoachStatus').textContent = externalCoachConfigured() ? '外部 AI 已授权' : '仅本地';
+    resetCoachModels();
     $('#externalCoachEndpoint').value = settings.externalCoachEndpoint || '';
+    $('#externalCoachModelsEndpoint').value = settings.externalCoachModelsEndpoint || '';
     $('#externalCoachModel').value = settings.externalCoachModel || '';
     $('#externalCoachToken').value = externalCoachToken || '';
     $('#externalCoachConsent').checked = !!settings.externalCoachConsent;
@@ -2009,13 +2092,6 @@
       $('#'+id).hidden = !betaTelemetry.length;
     }
     $('#betaTelemetrySummary').textContent = `已记录 ${betaTelemetry.length} 个交互事件。`;
-  }
-
-  function selectBundledCoach() {
-    const endpoint = bundledRelayEndpoint();
-    if(!endpoint){showToast('请先通过 HTTP/HTTPS 打开应用');return;}
-    $('#externalCoachEndpoint').value = endpoint;
-    $('#relayHealthStatus').textContent = '已选择本站连接。请勾选发送授权，再保存 AI 设置。';
   }
 
   async function deferToTomorrow() { await Long.defer();refreshDashboard();renderPlan(); }
@@ -2031,13 +2107,14 @@
     $('#insightTabs').addEventListener('click',e=>{const b=e.target.closest('[data-insight-tab]');if(!b)return;setInsightTab(b.dataset.insightTab);});
     $('#historyPanelBody').addEventListener('click',e=>{const row=e.target.closest('[data-history-id]');if(row)renderHistoryDetail(row.dataset.historyId);});
     $('#coachPanelBody').addEventListener('click',async e=>{
-      if(e.target.closest('#copyCoachContext'))await copyCoachContext();
       if(e.target.closest('#saveCoachReport')){await appendCoachHistory({source:'manual'});renderCoachPanel();showToast('Coach 复盘已保存在本机');return;}
-      const mode=e.target.closest('[data-coach-mode]');
-      if(mode){const next=mode.dataset.coachMode;if(next==='external'&&!externalCoachConfigured()){showToast('请先到“我的 → AI 教练”配置并授权');return;}settings.coachChatMode=next;await DB.setMeta('settings',settings);renderCoachPanel();return;}
-      const quick=e.target.closest('[data-coach-quick]'); if(quick){await sendCoachQuestion(quick.dataset.coachQuick);return;}
       if(e.target.closest('#sendCoachQuestion')){const input=document.querySelector('#coachQuestion');const q=input?.value||'';if(input)input.value='';await sendCoachQuestion(q);return;}
       if(e.target.closest('#clearCoachChat')){if(!coachChatMessages.length||confirm('清空本机 Coach 对话历史？这不会删除训练数据。')){coachChatMessages=[];await persistCoachChat();renderCoachPanel();}return;}
+    });
+    $('#coachPanelBody').addEventListener('change',async event=>{
+      if (event.target.id!=='coachMode') return;
+      settings.coachChatMode=event.target.value==='external'&&externalCoachConfigured()?'external':'local';
+      await DB.setMeta('settings',settings);
     });
     $('#coachPanelBody').addEventListener('keydown',async e=>{if(e.target?.id==='coachQuestion'&&e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();const q=e.target.value;e.target.value='';await sendCoachQuestion(q);}});
     $('#historyDetailBody').addEventListener('click',e=>{const del=e.target.closest('[data-delete-session]'),rev=e.target.closest('[data-revise-cycle]'),undo=e.target.closest('[data-reverse-revision]');if(del)deleteHistoricalSession(del.dataset.deleteSession);else if(rev)reviseCycle(rev.dataset.sessionId,+rev.dataset.reviseCycle);else if(undo)reverseRevision(undo.dataset.sessionId,undo.dataset.reverseRevision);});
@@ -2132,26 +2209,42 @@
     $('#saveReview').addEventListener('click',saveReview); $('#summaryDone').addEventListener('click',()=>{currentSession=null;navTo('dashboard');}); $('#summaryOpenCoach').addEventListener('click',()=>{currentSession=null;navTo('insights');setInsightTab('coach');});
 
     $('#toggleHaptic').addEventListener('click',async()=>{settings.haptics=!settings.haptics;await DB.setMeta('settings',settings);renderSettings();vibrate(40);});
-    $('#useBundledRelay').addEventListener('click',selectBundledCoach);
-    $('#testBundledRelay').addEventListener('click',async()=>{
-      const el=$('#relayHealthStatus');
-      try {
-        if(el)el.textContent='正在检测同源 Relay…';
-        const health=await testBundledRelayHealth();
-        if(el)el.textContent=`Relay 在线 · ${health.upstream||'unknown'} · 模型 ${health.model||'—'} · ${health.modelConfigured?'上游已配置':'尚未配置上游 API Key'}`;
-        showToast('Relay 检测通过');
-      } catch(err) {
-        if(el)el.textContent=`Relay 检测失败：${String(err?.message||err)}`;
-        showToast('Relay 暂不可用');
-      }
+    $('#fetchCoachModels').addEventListener('click',fetchCoachModels);
+    $('#coachModelList').addEventListener('change',event=>{
+      if(event.target.value)$('#externalCoachModel').value=event.target.value;
     });
+    $('#externalCoachModel').addEventListener('input',()=>{
+      $('#coachModelList').value=$('#externalCoachModel').value;
+    });
+    for (const id of ['externalCoachEndpoint','externalCoachModelsEndpoint','externalCoachToken']) {
+      $('#'+id).addEventListener('input',resetCoachModels);
+    }
     $('#saveExternalCoach').addEventListener('click',async()=>{
-      const endpoint=$('#externalCoachEndpoint').value.trim(); const model=$('#externalCoachModel').value.trim(); const consent=$('#externalCoachConsent').checked;
-      if(endpoint&&!validateExternalCoachEndpoint(endpoint)){$('#aiConnectionDetails').open=true;showToast('连接地址必须使用 HTTPS（localhost 可用 HTTP）');return;}
-      if(endpoint&&!consent){showToast('启用外部 Coach 前需要明确勾选发送授权');return;}
-      settings.externalCoachEndpoint=endpoint; settings.externalCoachModel=model; settings.externalCoachConsent=!!consent; settings.externalCoachEnabled=!!(endpoint&&consent); externalCoachToken=$('#externalCoachToken').value||'';
-      if(!settings.externalCoachEnabled&&settings.coachChatMode==='external')settings.coachChatMode='local';
-      await DB.setMeta('settings',settings); renderSettings(); renderCoachPanel(); showToast(settings.externalCoachEnabled?'外部 AI 已启用':'AI 设置已保存');
+      const button=$('#saveExternalCoach');
+      const endpoint=$('#externalCoachEndpoint').value.trim();
+      const model=$('#externalCoachModel').value.trim();
+      const consent=$('#externalCoachConsent').checked;
+      const modelsEndpoint=$('#externalCoachModelsEndpoint').value.trim();
+      const token=$('#externalCoachToken').value.trim();
+      try {
+        if(endpoint)coachModelsUrl(endpoint,modelsEndpoint);
+        if(endpoint&&!consent)throw new Error('启用外部 AI 前请勾选发送授权。');
+        const next={
+          externalCoachEndpoint:endpoint,
+          externalCoachModelsEndpoint:endpoint?modelsEndpoint:'',
+          externalCoachModel:model,
+          externalCoachConsent:consent,
+          externalCoachEnabled:!!(endpoint&&consent),
+          coachChatMode:endpoint&&consent?settings.coachChatMode:'local'
+        };
+        button.disabled=true;
+        await DB.setMeta('settings',{...settings,...next});
+        Object.assign(settings,next);
+        externalCoachToken=token;
+        renderSettings(); renderCoachPanel();
+        showToast(settings.externalCoachEnabled?'外部 AI 已启用':'AI 设置已保存');
+      } catch(error) { showToast(error.message); }
+      finally { button.disabled=false; }
     });
     $('#disableExternalCoach').addEventListener('click',async()=>{settings.externalCoachEnabled=false;settings.externalCoachConsent=false;settings.coachChatMode='local';externalCoachToken='';await DB.setMeta('settings',settings);renderSettings();renderCoachPanel();showToast('外部 Coach 已关闭');});
     $('#promptMode').addEventListener('change',async event=>{
@@ -2309,7 +2402,7 @@
     }
     if (!externalCoachConfigured()) {
       render(fallback,'本地复盘 · AI 尚未启用');
-      result.insertAdjacentHTML('beforeend','<button type="button" class="ghost" data-open-ai-settings>开启外部 AI</button>');
+      if (data.scope==='session') result.insertAdjacentHTML('beforeend','<button type="button" class="ghost" data-open-ai-settings>配置外部 AI</button>');
       return;
     }
     if (!confirm('将下面的摘要发送给外部 AI？\n\n'+data.facts.map(([label,value])=>label+' '+value).join('\n')+
@@ -2364,12 +2457,12 @@
     const on=(id,fn)=>$('#'+id).addEventListener('click',()=>Promise.resolve().then(fn).catch(error=>showToast(error.message)));
     on('reviewWithAI',()=>{if(currentSession?.phase==='COMPLETED')return requestAIReview('reviewWithAI','sessionAIResult',sessionReviewData(currentSession));});
     on('weeklyReviewWithAI',()=>requestAIReview('weeklyReviewWithAI','weeklyAIResult',weeklyReviewData()));
-    for (const id of ['sessionAIResult','weeklyAIResult']) $('#'+id).addEventListener('click',event=>{
+    document.addEventListener('click',event=>{
       if (!event.target.closest('[data-open-ai-settings]')) return;
       navTo('settings');
       $('#aiSettings').open = true;
-      if(!$('#externalCoachEndpoint').value)selectBundledCoach();
-      $('#externalCoachConsent').focus();
+      $('#aiConnectionDetails').open = true;
+      $('#externalCoachEndpoint').focus();
     });
     on('copyBasicProgram',()=>{resetBuilderState(Content.basicProgram);$('#customProgramName').value='动停法基础跟练 · 副本';renderBuilder();});
     on('clearBuilder',()=>{resetBuilderState();$('#customProgramName').value='我的训练';renderBuilder();});
@@ -2474,6 +2567,6 @@
   }
 
   function configureBetaTelemetryForTest() { settings.betaTelemetryEnabled=true; betaInstallId='test-install'; betaTelemetry=[]; }
-  window.__EC_DEBUG__ = { dataQuality, effectiveCycles, adaptiveEngine, buildCoachContext, coachRuleEngine, validateCoachOutput, externalCoachPayload, localCoachChatReply, sanitizeCoachChatOutput, containsTrainingControlDirective, validateExternalCoachEndpoint, bundledRelayEndpoint, bundledRelayHealthEndpoint, testBundledRelayHealth, coachChatRequest, callExternalCoach, configureExternalCoachForTest, makeSimulatedSession, seededRandom, betaDeviceSnapshot, betaExportPayload, recordBetaEvent, configureBetaTelemetryForTest };
+  window.__EC_DEBUG__ = { dataQuality, effectiveCycles, adaptiveEngine, buildCoachContext, coachRuleEngine, validateCoachOutput, externalCoachPayload, localCoachChatReply, sanitizeCoachChatOutput, containsTrainingControlDirective, validateExternalCoachEndpoint, coachModelsUrl, coachChatRequest, callExternalCoach, configureExternalCoachForTest, makeSimulatedSession, seededRandom, betaDeviceSnapshot, betaExportPayload, recordBetaEvent, configureBetaTelemetryForTest };
   init();
 })();

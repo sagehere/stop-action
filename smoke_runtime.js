@@ -1,14 +1,14 @@
 'use strict';
 const fs=require('fs');
 class FakeClassList{toggle(){} add(){} remove(){} contains(){return false}}
-function fakeEl(){return {style:{},dataset:{},classList:new FakeClassList(),textContent:'',innerHTML:'',value:'4',checked:false,files:[],addEventListener(){},setAttribute(){},removeAttribute(){},appendChild(){},remove(){},click(){},showModal(){},close(){},closest(){return null},querySelectorAll(){return []},querySelector(){return null},setPointerCapture(){}}}
+function fakeEl(){return {style:{},dataset:{},classList:new FakeClassList(),textContent:'',innerHTML:'',value:'4',checked:false,files:[],addEventListener(){},setAttribute(){},removeAttribute(){},appendChild(){},replaceChildren(){},remove(){},click(){},showModal(){},close(){},closest(){return null},querySelectorAll(){return []},querySelector(){return null},setPointerCapture(){}}}
 const body=fakeEl();body.dataset={};
 global.document={body,addEventListener(){},querySelector:()=>fakeEl(),querySelectorAll:()=>[],getElementById:()=>fakeEl(),createElement:()=>fakeEl(),elementFromPoint:()=>null};
 global.window=global;window.scrollTo=()=>{};window.addEventListener=()=>{};window.PointerEvent=function(){};window.FileReader=function(){};
 Object.defineProperty(globalThis,'navigator',{value:{vibrate:()=>true},configurable:true});
 global.confirm=()=>true;global.prompt=()=>'';global.alert=()=>{};
 Object.defineProperty(globalThis,'location',{value:{protocol:'http:',origin:'http://localhost:8080',href:'http://localhost:8080/index.html'},configurable:true});
-class FakeURL{constructor(raw){const m=String(raw).match(/^(https?):\/\/([^\/]+)(.*)$/i);if(!m)throw new Error('bad url');this.protocol=m[1].toLowerCase()+':';this.host=m[2];this.hostname=m[2].split(':')[0];this.href=String(raw)}toString(){return this.href}static createObjectURL(){return ''}static revokeObjectURL(){}}
+class FakeURL extends URL{static createObjectURL(){return ''}static revokeObjectURL(){}}
 Object.defineProperty(globalThis,'URL',{value:FakeURL,configurable:true});Object.defineProperty(globalThis,'Blob',{value:function(){},configurable:true});
 const mem=new Map();
 window.TrainingDB={init:async()=>true,getAllSessions:async()=>[],putSession:async()=>{},deleteSession:async()=>{},getMeta:async(k,f)=>mem.has(k)?mem.get(k):f,setMeta:async(k,v)=>{mem.set(k,v)},deleteMeta:async k=>mem.delete(k),setCurrentSession:async()=>{},getCurrentSession:async()=>null,clearCurrentSession:async()=>{},clearTrainingData:async()=>{mem.clear()}};
@@ -42,13 +42,12 @@ setTimeout(async()=>{
   assert(!!d.validateExternalCoachEndpoint('https://relay.example.com/coach'),'https relay accepted');
   assert(!d.validateExternalCoachEndpoint('http://relay.example.com/coach'),'insecure remote relay rejected');
   assert(!!d.validateExternalCoachEndpoint('http://localhost:8787/coach'),'localhost relay allowed');
-  assert(d.bundledRelayEndpoint()==='http://localhost:8080/api/coach','bundled same-origin relay endpoint');
-  assert(d.bundledRelayHealthEndpoint()==='http://localhost:8080/api/coach/ready','bundled relay health endpoint');
+  assert(d.coachModelsUrl('https://relay.example.com/api/coach?x=1')==='https://relay.example.com/api/coach/models','model list URL defaults to child route');
+  assert(d.coachModelsUrl('https://relay.example.com/api/coach','/v1/models')==='https://relay.example.com/v1/models','same-origin model list override');
+  let blocked=false; try{d.coachModelsUrl('https://relay.example.com/api/coach','https://other.example/models');}catch{blocked=true} assert(blocked,'cross-origin model list override rejected');
   d.configureBetaTelemetryForTest(); d.recordBetaEvent('SWIPE_LEVEL_UP',{phase:'BUILD',arousal:7,signal:'PELVIC_TENSION'});
   const beta=d.betaExportPayload(); assert(beta.format==='stop-action-device-test' && beta.events.length===1,'device test export generated');
   assert(!('arousal' in beta.events[0].meta) && !('signal' in beta.events[0].meta),'device test export strips sensitive training fields');
-  global.fetch=async()=>({ok:true,status:200,json:async()=>({ok:true,service:'coach-relay',upstream:'mock',model:'gpt-5.6-luna',modelConfigured:true})});
-  const health=await d.testBundledRelayHealth(); assert(health.ok===true && health.service==='coach-relay','bundled relay health check');
   const chatReq=d.coachChatRequest('下次关注什么'); assert(chatReq.policy.mayModifyTrainingEngine===false && chatReq.policy.rawEventsAllowed===false && chatReq.context.privacy.sessionIdsIncluded===false,'chat request privacy and guardrails');
   d.configureExternalCoachForTest();
   let captured=null; global.fetch=async(url,opts)=>{captured={url,opts};return {ok:true,status:200,json:async()=>({schema:'coach-chat-response-v1',output:{answer:'继续观察近期趋势。',focus:'关注恢复过程',evidence:[{label:'ART',value:'34s'}],uncertainty:'样本有限',safetyNotice:null}})}};

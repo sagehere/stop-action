@@ -309,7 +309,7 @@ training.example.com {
 - 可以开始并完成一次训练。
 - 刷新网页后训练记录仍存在。
 - PWA 可以安装。
-- 如果启用外部 Coach，Relay Health 检查通过。
+- 如果启用外部 AI，在「我的 → AI 教练 → 连接地址、模型和令牌」手动填写教练端点，再拉取模型并保存授权。
 - 实机测试 JSON / CSV 可以正常导出。
 
 ### 9. 在 Dockge 中更新
@@ -421,7 +421,7 @@ docker login ghcr.io
 - OPENAI_MODEL 与 ALLOWED_MODELS 是否一致。
 - ALLOWED_ORIGINS 是否与实际 HTTPS 域名完全一致。
 - 修改 Secret 后是否重新 Deploy。
-- 反代是否允许 /api/coach、/api/coach/ready、/api/health、/api/ready。
+- 反代是否允许 /api/coach、/api/coach/models、/api/coach/ready、/api/health、/api/ready。
 
 #### PWA 无法安装
 

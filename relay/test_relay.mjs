@@ -12,6 +12,7 @@ const child = spawn(process.execPath, ['server.mjs'], {
     ...process.env,
     HOST: '127.0.0.1', PORT: String(port), MOCK_OPENAI: '1',
     RELAY_BEARER_TOKEN: secret, RATE_LIMIT_MAX: '20',
+    OPENAI_MODEL: 'gpt-6-astra', ALLOWED_MODELS: 'gpt-6-astra,gpt-6-sol',
   },
   stdio: ['ignore','pipe','pipe'],
 });
@@ -60,6 +61,18 @@ try {
 
   const badOrigin=await fetch(`${base}/api/coach`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${secret}`,'Origin':'https://evil.example'},body:JSON.stringify(goodRequest)});
   assert.equal(badOrigin.status,403);
+
+  const modelPath=`${base}/api/coach/models`;
+  assert.equal((await fetch(modelPath)).status,401);
+  const allowedHeaders={Authorization:`Bearer ${secret}`,Origin:base};
+  assert.equal((await fetch(modelPath,{headers:{...allowedHeaders,Origin:'https://evil.example'}})).status,403);
+  const modelResponse=await fetch(modelPath,{headers:allowedHeaders});
+  assert.equal(modelResponse.status,200);
+  assert.equal(modelResponse.headers.get('access-control-allow-origin'),base);
+  assert.equal(modelResponse.headers.get('cache-control'),'no-store');
+  assert.deepEqual(await modelResponse.json(),{object:'list',data:[
+    {id:'gpt-6-astra',object:'model'},{id:'gpt-6-sol',object:'model'}
+  ]});
 
   const ok=await fetch(`${base}/api/coach`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${secret}`},body:JSON.stringify(goodRequest)});
   assert.equal(ok.status,200);
