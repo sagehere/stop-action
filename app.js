@@ -2610,30 +2610,11 @@
     }finally{button.disabled=false;}
   }
 
-  function renderWeekCalendar() {
-    const start = weekStartKey(now()), week = weeklyPlanStats();
-    const days = Array.from({length:7},(_,index)=>{
-      const date = LongPlans.addDays(start,index);
-      const tasks = week.tasks.filter(task=>task.date===date);
-      const counts = tasks.reduce((statuses,task)=>{
-        const status = task.status==='COMPLETED' ? '完成' : task.status==='SKIPPED' ? '跳过'
-          : task.lastPartialSessionId ? '部分完成' : '待练';
-        statuses[status] = (statuses[status]||0)+1;
-        return statuses;
-      },{});
-      const label = Object.entries(counts).map(([status,count])=>status+' '+count).join(' · ');
-      return `<li><time datetime="${date}">${date.slice(5)}</time><span>${label||'—'}</span></li>`;
-    });
-    return week.active ? `<ol class="week-calendar" aria-label="本周计划日历">${days.join('')}</ol>` : '';
-  }
-
-  function reportAndFilters(){
-    const data = weeklyReviewData();
-    const text = localReviewText(data);
-    $('#weeklyReport').innerHTML=`<h2>个人周复盘</h2>${renderWeekCalendar()}${reviewFacts(data)}<p>${escapeHtml(text.answer)}</p>`;
+  function renderInsightFilters(){
+    const root=$('#insightFilters'), open=root.querySelector('details')?.open;
     const select=(key,label,values)=>`<label>${label}<select class="text-input" data-filter="${key}"><option value="">全部</option>${values.map(([value,text])=>`<option value="${escapeHtml(value)}" ${insightFilter[key]===value?'selected':''}>${escapeHtml(text)}</option>`).join('')}</select></label>`;
     const unique=key=>[...new Set(sessionCache.map(key).filter(Boolean))].map(value=>[value,value]);
-    $('#insightFilters').innerHTML=`<details><summary>筛选条件与计时口径</summary>${select('plan','长期计划',Long.meta().longPlans.map(p=>[p.id,p.name]))}${select('stage','阶段',unique(s=>s.planSnapshot?.stageName))}${select('program','单次方案',unique(s=>s.programSnapshot?.name))}${select('tracking','记录模式',[['simple','简易记录'],['detailed','精细记录']])}${select('mode','提示模式',Object.entries(PROMPT_MODES))}${select('clock','计时口径',[['2','新版有效时钟'],['1','旧版：暂停口径不可靠']])}<label>开始日期<input type="date" class="text-input" data-filter="from" value="${insightFilter.from}"></label><label>结束日期<input type="date" class="text-input" data-filter="to" value="${insightFilter.to}"></label><p class="small">默认仅比较新版计时。选择全部会混合计时口径，仅供浏览，不作前后改善结论。</p></details>`;
+    root.innerHTML=`<details ${open?'open':''}><summary>筛选条件与计时口径</summary>${select('plan','长期计划',Long.meta().longPlans.map(p=>[p.id,p.name]))}${select('stage','阶段',unique(s=>s.planSnapshot?.stageName))}${select('program','单次方案',unique(s=>s.programSnapshot?.name))}${select('tracking','记录模式',[['simple','简易记录'],['detailed','精细记录']])}${select('mode','提示模式',Object.entries(PROMPT_MODES))}${select('clock','计时口径',[['2','新版有效时钟'],['1','旧版：暂停口径不可靠']])}<label>开始日期<input type="date" class="text-input" data-filter="from" value="${insightFilter.from}"></label><label>结束日期<input type="date" class="text-input" data-filter="to" value="${insightFilter.to}"></label><p class="small">默认仅比较新版计时。选择全部会混合计时口径，仅供浏览，不作前后改善结论。</p></details>`;
   }
   function updateReady(){const training=!!currentSession&&currentSession.phase!=='COMPLETED';$('#applyUpdate').hidden=!waitingWorker||training;$('#applyUpdate').disabled=training;}
   async function registerWorker(){
@@ -2741,8 +2722,8 @@
     $('#trendPanelBody').addEventListener('change',event=>{
       if (event.target.id==='trendMetric') {trendMetric=event.target.value;renderTrendPanel();}
     });
-    $('#insightFilters').addEventListener('change',event=>{const key=event.target.dataset.filter;if(key){insightFilter[key]=event.target.value;renderInsights();reportAndFilters();}});
-    const oldRender=renderInsights;renderInsights=()=>{oldRender();reportAndFilters();};
+    $('#insightFilters').addEventListener('change',event=>{const key=event.target.dataset.filter;if(key){insightFilter[key]=event.target.value;renderInsights();}});
+    const oldRender=renderInsights;renderInsights=()=>{oldRender();renderInsightFilters();};
     window.addEventListener('unhandledrejection',()=>{$('#saveStatus').textContent='操作未完成 · 请重试或导出';});
     window.addEventListener('training-db-blocked',()=>showToast('请关闭其他标签页后重试数据库升级'));
     if(typeof BroadcastChannel!=='undefined'){

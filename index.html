@@ -237,6 +237,7 @@
     .cycle-day{display:grid;gap:3px;padding:8px 4px;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:9px;font-weight:650}
     .cycle-day.practice{border-color:currentColor;background:#334051;color:#fff}
     .cycle-day small{font-weight:400}
+    .program-card a{color:#a8cbf4}
     .calendar-slot>.calendar-day{width:100%;min-height:44px;padding:4px}
     .calendar-slot.outside-month{opacity:.5}
     .calendar-day small{font-size:.72rem}
@@ -350,8 +351,7 @@
     </section>
 
     <section id="insights" class="view">
-      <div id="weeklyReport" class="card"></div><div id="insightFilters" class="card"></div>
-      <div class="eyebrow">Insights</div><div class="screen-title">数据与复盘</div><p class="muted">只和自己的近期状态比较；方案对比是描述性数据，不代表因果结论。</p>
+      <h1 class="screen-title">数据与复盘</h1>
       <div id="insightTabs" class="insight-tabs">
         <button class="insight-tab active" data-insight-tab="trends">趋势</button>
         <button class="insight-tab" data-insight-tab="coach">教练</button>
@@ -360,6 +360,7 @@
         <button class="insight-tab" data-insight-tab="decisions">调整记录</button>
         <button class="insight-tab" data-insight-tab="quality">数据质量</button>
       </div>
+      <div id="insightFilters" class="card"></div>
       <div id="trendPanel" class="insight-panel active">
         <div class="card"><button id="weeklyReviewWithAI" class="secondary">分析近期训练</button><div id="weeklyAIResult" aria-live="polite"></div></div>
         <div id="trendPanelBody" class="section"></div>
